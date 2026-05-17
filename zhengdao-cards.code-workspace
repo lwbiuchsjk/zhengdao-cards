@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "Design",
+			"path": "Design"
+		}
+	],
+	"settings": {
+		"godotTools.lsp.serverPort": 6201
+	}
+}
