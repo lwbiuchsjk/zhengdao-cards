@@ -4,16 +4,16 @@
 
 - **zhengdao-cards** 是 **vibe-test 的卡牌交互版续作**——只动前端表现交互层(改为卡牌),引擎层(事件调度 / 事件包 / 能力 / 鉴定 / 心性 / 自省 / 任务)整体保留并新增选项层调度。
 - 修真问道题材,涌现式叙事(用系统创造剧情),与 vibe-test **同一世界观和叙事内核**。
-- 当前阶段: **MVP 工程骨架就绪 → 等待 C 阶段(引擎代码迁移 + 启动验证) → D 阶段(MVP 1 期前置 §7.1/7.2/7.3) → MVP 1 期实施**。
+- 当前阶段: **MVP 工程骨架就绪 → C 阶段(引擎代码迁移 + 启动验证) ✅ 完成 + Godot 4.6.2 升级 → D 阶段(MVP 1 期前置 §7.1/7.2/7.3) → MVP 1 期实施**。
 - 完整方案见 [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md)(详见 §7.8 工程启动 checklist)。
 
 ## 技术栈
 
-Godot 4.5,GDScript,Git submodule(共用 Design 与 vibe-test 同源)。
+Godot 4.6.2,GDScript,Git submodule(共用 Design 与 vibe-test 同源)。
 
 ## 项目结构
 
-- `scripts/`     脚本文件(C 阶段从 vibe-test 整体复制核心引擎 + 状态机)
+- `scripts/`     脚本文件(已从 vibe-test 整体复制核心引擎 + 状态机;systems/models/config 三分 + main_game.gd 启动器)
 - `assets/`     资源文件(图片、音效等;卡牌方案新生产,不直接复用 vibe-test mosaic)
 - `test/`       测试文件
 - `Design/`     设计文档目录(Git submodule → 私有仓库 `vibe-test-design`,**与 vibe-test 共用同一份**)
@@ -63,7 +63,7 @@ Design submodule 已按三档分区组织(2026-05-15 落地):
 
 **契约边界**(代码侧改动需同步回看三件套):
 
-- `scripts/systems/world_event_config_assembler.gd::_apply_effect_or_resolution_action`(target 路由分支)— C 阶段迁移后路径
+- `scripts/systems/world_event_config_assembler.gd::_apply_effect_or_resolution_action`(target 路由分支)— 迁移后路径
 - 引擎新增/删除的 `rule_type` / `condition_type` 行为分支
 - 资源 key 集合(`RESOURCE_KEYS`)、affinity value 格式
 
@@ -117,7 +117,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 ## 活跃
 
-- [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md) — **草案 v3 + 工程启动 checklist**(2026-05-15):核心承担模型(事件-选项-结果三层卡循环 + 选项层调度 + 鉴定+心性资源闭环 + 资源卡+标记 + 结果卡复用 outcome)+ §2.2 内核明确化(普通事件玩法 / chain 叙事承担分离)+ MVP 4 步迭代路径 + 14 条未决议题。**§七·7.8 工程启动**: A 阶段(Design 三档分区) ✅ + B 阶段(本仓库初始化 含 Design junction + 多根工作区 + Godot 项目骨架) ✅ → **C 阶段(引擎代码从 vibe-test 整体复制 + 启动验证) ⏳** → D 阶段(MVP 1 期前置 §7.1 普通事件撰写规格 / §7.2 资源种类集合 / §7.3 普通事件对世界状态回馈)。
+- [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md) — **草案 v3 + 工程启动 checklist**(2026-05-15):核心承担模型(事件-选项-结果三层卡循环 + 选项层调度 + 鉴定+心性资源闭环 + 资源卡+标记 + 结果卡复用 outcome)+ §2.2 内核明确化(普通事件玩法 / chain 叙事承担分离)+ MVP 4 步迭代路径 + 14 条未决议题。**§七·7.8 工程启动**: A/B/C 阶段 ✅ 完成(2026-05-17 主项目 commit `330dc98`) + Godot 4.6.2 升级 ✅(commit `2094d7f`,zhengdao-cards 单独升级,vibe-test 留 4.5) → **D 阶段(MVP 1 期前置 §7.1 普通事件撰写规格 / §7.2 资源种类集合 / §7.3 普通事件对世界状态回馈) ⏳**。
 
 ## 进度维护规则
 

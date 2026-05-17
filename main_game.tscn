@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3 uid="uid://czhd_main_game_root"]
+[gd_scene format=3 uid="uid://xe0wr278lor6"]
 
-[ext_resource type="Script" path="res://scripts/main_game.gd" id="1_main_game"]
+[ext_resource type="Script" uid="uid://c1xgxflcgvacq" path="res://scripts/main_game.gd" id="1_main_game"]
 
-[node name="MainGame" type="Node"]
+[node name="MainGame" type="Node" unique_id=1783897585]
 script = ExtResource("1_main_game")
