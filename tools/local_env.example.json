@@ -1,0 +1,14 @@
+{
+  "obsidian_cli": "D:/softwares/obsidian/Obsidian.com",
+  "vault_name": "Design",
+  "godot_exe": "<your_godot_console_exe_path>",
+  "design_dir": "Design",
+  "moonshot_api_key": "<your_moonshot_api_key_or_empty>",
+  "deploy": {
+    "ssh_target": "<ssh_user>@<server_ip_or_domain>",
+    "remote_root": "/var/www/games",
+    "url_root": "https://<server_ip_or_domain>",
+    "game_name": "<your_game_name>",
+    "export_preset": "Web"
+  }
+}

@@ -1,0 +1,49 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+lark-mcp.config.json
+
+# 知识库同步流程已废弃，整个目录从仓库移除（本地保留）
+_kb_sync/
+
+# Local IDE settings
+.vscode/settings.json
+
+# Claude Code 本地配置（用户自管，不入仓）
+.claude/settings.local.json
+
+# Codex agent config (auto-generated)
+.codex
+
+# Local environment config (path varies per machine, see tools/local_env.example.json)
+tools/local_env.json
+
+# Godot 跑测临时日志（手动 / PowerShell 启动 Godot 时生成）
+godot_*.log
+godot_*.err
+
+# Python virtual environment for tools (openai SDK, etc.)
+tools/.venv/
+
+# Web export output (CI handles export and deploy)
+output/
+
+# Codex agent config (auto-generated)
+.codex
+
+# Godot translation temp files
+*.tmp
+
+# Godot CSV import translation artifacts (unused — CSV read via FileAccess)
+*.translation
+
+# Python cache
+tools/__pycache__/
+*.pyc
+
+# ML model weights (LangSAM / SAM / etc 自动下载到 ~/.cache,不入仓)
+*.pt
+*.pth
+*.safetensors
+*.bin
