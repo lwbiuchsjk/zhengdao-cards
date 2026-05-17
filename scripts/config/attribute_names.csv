@@ -1,0 +1,10 @@
+internal_key,display_name,category,value_range,description
+aptitude,资质,attribute,,前台主属性；表达角色整体距离仙缘门槛还有多远
+physique,武学,attribute,1-4阶段标记：初通拳脚/招式成路/功法渐深/火候已成,隐藏能力；表达武术、练法、功法相关积累
+craft,百艺,attribute,1-4阶段标记：手上有活/做事熟练/技法精熟/可当一面,隐藏能力；表达手艺、技艺、执行层面的总体水平
+insight,学识,attribute,1-4阶段标记：知其一二/知道门道/识见渐深/通晓秘要,隐藏能力；表达知识、理论、见闻、秘辛认知方面的积累
+xinxing,心性,attribute,-2到+2,长期倾向；+2路径认同 / -2主动押注。与心气分开处理
+hp,生命,resource,,角色生命值
+energy,精力,resource,1力有不逮/2尚可支撑/3精力充沛,状态；表达当前还能不能继续投入、做事、硬撑
+spirit,心气,resource,1心气低落/2心气平稳/3心气饱满,状态；表达当前还能不能稳住、提着劲往前走。注意与世界参数 morale 区分
+gold,银两,resource,,货币资源

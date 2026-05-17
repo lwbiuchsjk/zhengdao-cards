@@ -1,0 +1,1 @@
+question_id,question_text,condition,background_art,option_id,option_text,effect_target,effect_key,effect_value,effect_branch,check_type,check_items,check_hit_threshold,check_required_hits,outcome_text,outcome_branch

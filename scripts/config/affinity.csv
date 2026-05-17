@@ -1,0 +1,11 @@
+from_role_id,to_role_id,score
+player_001,npc_qin,0
+npc_qin,player_001,0
+player_001,npc_he,0
+npc_he,player_001,0
+player_001,npc_cheng,0
+npc_cheng,player_001,0
+player_001,npc_lu,0
+npc_lu,player_001,0
+player_001,npc_zhou,0
+npc_zhou,player_001,0

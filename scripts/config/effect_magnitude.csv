@@ -1,0 +1,11 @@
+dimension,direction,effect_target,effect_key_example,small,large,note
+ability,accumulate,attribute,craft/physique/insight,1,3,能力积累
+ability,damage,attribute,craft/physique/insight,-1,-3,能力受损
+energy,consume,resource,energy,-1,-3,精力消耗
+energy,recover,resource,energy,1,3,精力恢复
+spirit,consume,resource,spirit,-1,-3,心气消耗
+spirit,recover,resource,spirit,1,3,心气恢复
+xinxing,positive,attribute,xinxing,1,2,心性偏向+（范围-2~+2）
+xinxing,negative,attribute,xinxing,-1,-2,心性偏向-（范围-2~+2）
+trust,increase,affinity,player_001->npc_xxx,5,15,关系.信任提升
+trust,decrease,affinity,player_001->npc_xxx,-5,-15,关系.信任下降

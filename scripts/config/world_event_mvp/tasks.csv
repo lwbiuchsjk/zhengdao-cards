@@ -1,0 +1,5 @@
+task_id,title,duration_turns,on_expire,weight_bias_profile,complete_when,accept_when
+task_meet_he,[任务·药铺] 认识何守仁,20,fail,,flags.met_he == true,flags.met_he == false
+task_meet_qin,[任务·家+市场] 认识秦素娘,20,fail,,flags.met_qin == true,flags.met_qin == false
+task_meet_zhou,[任务·练场] 认识周既明,20,fail,,flags.met_zhou == true,flags.met_zhou == false
+task_meet_cheng,[任务·道观] 认识程叔衡,20,fail,,flags.met_cheng == true,flags.met_cheng == false

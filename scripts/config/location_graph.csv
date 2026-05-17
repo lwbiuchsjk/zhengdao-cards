@@ -1,0 +1,5 @@
+location_id,display_name,neighbors,art_file
+loc_pharmacy,药铺,loc_qin_house;loc_dao_temple,pharmacy_default.png
+loc_qin_house,家,loc_pharmacy;loc_training_ground;loc_dao_temple,qin_house_default.png
+loc_training_ground,练场,loc_qin_house;loc_dao_temple,training_ground_default.png
+loc_dao_temple,道观,loc_pharmacy;loc_qin_house;loc_training_ground,dao_temple_default.png
