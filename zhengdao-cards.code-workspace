@@ -9,6 +9,6 @@
 		}
 	],
 	"settings": {
-		"godotTools.lsp.serverPort": 6201
+		"godotTools.lsp.serverPort": 6200
 	}
 }
