@@ -119,6 +119,10 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 - [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md) — **草案 v3 + 工程启动 checklist** + **§7.2 资源体系 + §7.3 回馈原则双议题收口**(2026-05-18~19):取消消耗类(保留金钱卡牌化外部循环)/ 心性系统重构(心性标记 + xinxing 切换 + 行为驱动)/ 关系标记分配机制 / 孤注一掷形态 / **能力 + 人际经验值升阶机制** / §7.3 涌现两路径(调度 + 鉴定)+ 5 条回馈原则 + 鉴定丰富度首要指标. 章节更新 §7.2 / §3.4 / §3.5 / §7.3 / §7.4 / §7.7 / §五. **§7.8 工程启动**: A/B/C ✅ + Godot 4.6.2 ✅. **§7.1 普通事件撰写规格 ✅ 全节收口**(2026-05-21, A 模板层: 处境模板/三类文字长度/选项两型+经济/5 类原型/四档结果; B/C/D 原则层: 鉴定分布三维度/两层回馈模型/金钱消费场景). **D 阶段 MVP 1 期前置三议题(§7.1/§7.2/§7.3)全部完成 → MVP 1 期实施**。
 
+## 预启动工作项(follow-up,可新会话接手)
+
+- **explore 四件套 queue 格式统一** — `explore-supervise`(新版「问题段 frontmatter」决策模型,要求 `problem_id`/`status`/`hypothesis`/`data_standard`/`closure_rule`/`candidate_tasks`)与 `explore-kickoff` + 共享 vibe-test queue(旧版 task-list,待办/已完成,无问题段)**不兼容**。2026-05-22 zhengdao-cards #013 supervise 时暴露(启动检查失败,当次改人工按原则处理:扎实度 4/4、收口 closed_supported)。**待统一**:要么 queue 迁到新版「问题中心」模型(kickoff task body 格式随之改),要么 supervise 加旧格式兼容路径。详见 [Design/共享/进度/explore_skill_通用化进度.md](Design/共享/进度/explore_skill_通用化进度.md) 「已知阻塞 / 待澄清」。**新会话可接手此线。**
+
 ## 进度维护规则
 
 同 vibe-test:详情在进度文档,索引在此处 ≤ 一行;更新时机=会话产生实质性进展;新建进度文档需在此添加索引;归档需冒烟测试通过;活跃区控制 ≤ 10 条;会话启动延续某活跃进度时先读该文档顶部「新会话启动必读」段。
