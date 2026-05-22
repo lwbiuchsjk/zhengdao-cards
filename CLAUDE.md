@@ -132,7 +132,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 ## 预启动工作项(follow-up,可新会话接手)
 
-- **explore 四件套 queue 格式统一** — `explore-supervise`(新版「问题段 frontmatter」决策模型,要求 `problem_id`/`status`/`hypothesis`/`data_standard`/`closure_rule`/`candidate_tasks`)与 `explore-kickoff` + 共享 vibe-test queue(旧版 task-list,待办/已完成,无问题段)**不兼容**。2026-05-22 zhengdao-cards #013 supervise 时暴露(启动检查失败,当次改人工按原则处理:扎实度 4/4、收口 closed_supported)。**待统一**:要么 queue 迁到新版「问题中心」模型(kickoff task body 格式随之改),要么 supervise 加旧格式兼容路径。详见 [Design/共享/进度/explore_skill_通用化进度.md](Design/共享/进度/explore_skill_通用化进度.md) 「已知阻塞 / 待澄清」。**新会话可接手此线。**
+- ~~**explore 四件套 queue 格式统一**~~ **✅ 已解决(2026-05-22)** — 采纳「混合·按需开问题段」方案:扁平任务为默认 + 问题段为可选增量层,`explore-supervise` 双模式自适应(扁平轻模式 / 问题模式),启动检查不再硬性要求问题段。改动落用户级 skill(supervise/kickoff + 各 references)+ setup 模板 + 实例侧 queue/README 契约文档,跨项目即时共享。#013 扁平场景冒烟走通(启动检查判扁平轻模式 → 扎实度 4/4 + 6 源全满足 → 确认归档)。详见 [Design/共享/进度/explore_skill_通用化进度.md](Design/共享/进度/explore_skill_通用化进度.md) 2026-05-22(三) 历史。
 
 ## 进度维护规则
 
