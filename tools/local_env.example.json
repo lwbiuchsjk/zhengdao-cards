@@ -10,5 +10,17 @@
     "url_root": "https://<server_ip_or_domain>",
     "game_name": "<your_game_name>",
     "export_preset": "Web"
+  },
+  "explore": {
+    "design_repo_url": "https://github.com/<org>/<design-repo>.git",
+    "explore_dir": "Design/_explore",
+    "trigger_id": "<remote_trigger_id_or_empty>",
+    "trigger_name": "<trigger display name, e.g. 夜间设计探索 — your-project>",
+    "environment_id": "<env_id_or_empty>",
+    "cron": "0 18 * * *",
+    "model": "claude-sonnet-4-6",
+    "lock_tag_default": "模块/前端表现",
+    "round_budget_minutes": 45,
+    "websearch_limit": 6
   }
 }
