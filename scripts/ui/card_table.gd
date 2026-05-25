@@ -9,9 +9,10 @@ extends Node2D
 ## 验证: B③#1 拖拽优先级(卡隙拖=平移, 标记上拖=拖标记, 互不冲突)。
 ## S2 起以锚点簇 + 因果链 + 手牌区替代 _build_s1_sample。
 
-# 显式 preload 卡 / 标记脚本(不依赖全局 class_name 缓存 → 全新克隆 / headless 运行均稳健)
+# 显式 preload 卡 / 标记 / mock 脚本(不依赖全局 class_name 缓存 → 全新克隆 / headless 运行均稳健)
 const CardScn := preload("res://scripts/ui/card.gd")
 const MarkerScn := preload("res://scripts/ui/marker.gd")
+const MockDataScn := preload("res://scripts/ui/mock_data.gd")
 
 # 牌桌尺寸(略大于 1920x1080 视口, 留平移空间)
 const TABLE_SIZE := Vector2(2560, 1600)
@@ -25,12 +26,14 @@ var _ui_layer: CanvasLayer    # 系统按钮等, 不受镜头
 var _panning: bool = false
 
 # ---- 因果链(§2.3)状态 ----
-const CHAIN_DX := 270.0   # 链阶段横向间距(事件 → 选项 → 结果)
-const OPT_DY := 290.0     # 选项纵向间距(≤3 平铺)
+const SLOT_DX := 220.0    # 因果链横向间距(事件→选项→结果 始终向右; 卡宽 200 + 间隙)
 var _chain_nodes: Array[Node] = []   # 当前链上的卡, 用于清空
+var _option_cards: Array[Node] = []  # 当前选项卡(选定后清除未选中的)
 var _chain_origin: Vector2 = Vector2.ZERO
 var _options_shown: bool = false     # 选项已展开守卫(同步置位, 防翻牌 tween 期间重复点击)
 var _result_shown: bool = false
+var _result_revealed: bool = false   # 结果已揭示守卫(防屏息窗口内重复点击)
+var _hand_cards: Dictionary = {}     # res_type -> 手牌资源卡(标记领取飞向目标)
 
 func _ready() -> void:
 	# 启用 2D 物理拾取 → 卡牌 / 标记 的 Area2D hover/click 生效
@@ -144,6 +147,7 @@ func _build_hand_zone() -> void:
 		var card := _make_card(CardScn.CardType.RESOURCE, titles[i], bodies[i])
 		card.position = Vector2(start_x + i * spacing, y)
 		_lower_layer.add_child(card)
+		_hand_cards[res_types[i]] = card  # 领取标记飞向目标
 		# 标记(棋子型)悬于卡上方, §1.2 离散容量呈现
 		var cnt: int = counts[i]
 		for j in cnt:
@@ -157,7 +161,7 @@ func _build_hand_zone() -> void:
 ## 抽牌起新链: 清空旧链 → 生成事件卡(牌背, 点击翻开 + 展开选项)
 func _start_chain() -> void:
 	_clear_chain()
-	_chain_origin = Vector2(1010, 620)
+	_chain_origin = Vector2(1010, 620)  # 事件在锚点簇右侧; 选项/结果向右依次展开(始终左→右)
 	var ev := _make_card(CardScn.CardType.EVENT, "山道遇雨", "雨势渐大，前方有破庙可避。你会如何应对？")
 	ev.start_face_up = false
 	ev.position = _chain_origin
@@ -173,30 +177,116 @@ func _on_event_clicked(ev: CardScn) -> void:
 	ev.flip_to(true)
 	_expand_options()
 
-## 展开选项(≤3 平铺, 纯代码偏移定位 → 槽位均匀、无重叠)
+## 展开选项(≤3, 水平排在事件左侧; 纯代码偏移 → 均匀无重叠)
 func _expand_options() -> void:
 	var titles: Array[String] = ["冒雨赶路", "破庙暂避", "寻人引路"]
 	var bodies: Array[String] = ["直接型 · 必有数值成长", "鉴定型 · 体魄 / 心性", "鉴定型 · 人际"]
+	var types: Array[int] = [MockDataScn.OptType.DIRECT, MockDataScn.OptType.CHECK, MockDataScn.OptType.CHECK]
 	var n: int = titles.size()
-	var col_x := _chain_origin.x + CHAIN_DX
+	_option_cards.clear()
 	for i in n:
 		var opt := _make_card(CardScn.CardType.OPTION, titles[i], bodies[i])
-		opt.position = Vector2(col_x, _chain_origin.y + (i - (n - 1) / 2.0) * OPT_DY)
+		opt.position = Vector2(_chain_origin.x + (i + 1) * SLOT_DX, _chain_origin.y)  # 紧邻事件向右依次排
 		_upper_zone.add_child(opt)
 		_chain_nodes.append(opt)
-		opt.clicked.connect(func(_c: CardScn) -> void: _expand_result())
+		_option_cards.append(opt)
+		var t: int = types[i]  # 按值捕获该选项类型
+		opt.clicked.connect(func(c: CardScn) -> void: _on_option_chosen(c, t))
 
-## 展开结果(占位; S3 接管聚焦 / 投入 / 揭示循环)
-func _expand_result() -> void:
+## 选定一个选项: 未选中的淡出消失 + 选中项归到事件左侧固定槽 + 出结果(更聚焦)
+func _on_option_chosen(chosen: CardScn, opt_type: int) -> void:
+	if _result_shown:
+		return
+	for opt in _option_cards:
+		if opt != chosen and is_instance_valid(opt):
+			_fade_and_free(opt)
+	_option_cards.clear()
+	var slot := Vector2(_chain_origin.x + SLOT_DX, _chain_origin.y)  # 选中项归到事件右侧紧邻槽
+	var tw := chosen.create_tween()
+	tw.tween_property(chosen, "position", slot, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_expand_result(opt_type)
+
+## 淡出并释放一张卡(从链清单移除)
+func _fade_and_free(node: Node2D) -> void:
+	_chain_nodes.erase(node)
+	var tw := node.create_tween()
+	tw.tween_property(node, "modulate:a", 0.0, 0.15)
+	tw.tween_callback(node.queue_free)
+
+## 选定选项 → 展开结果卡(牌背, 点击揭示)。
+## tier: 直接型固定小成功; 鉴定型 S3a 暂随机(S3b 起由投入读数决定)。
+func _expand_result(opt_type: int) -> void:
 	if _result_shown:
 		return
 	_result_shown = true
-	var res := _make_card(CardScn.CardType.RESULT, "结果", "（S3 揭示循环接管：档位 + 标记领取）")
+	var tier: String = "success"
+	if opt_type == MockDataScn.OptType.CHECK:
+		var roll: Array[String] = ["great_success", "success", "fail", "great_fail"]
+		tier = roll[randi() % roll.size()]
+	var outcome: Dictionary = MockDataScn.outcome_for(tier)
+	var res := _make_card(CardScn.CardType.RESULT, MockDataScn.tier_label(tier), "点击牌背揭示。")
 	res.start_face_up = false
-	res.position = Vector2(_chain_origin.x + CHAIN_DX * 2.0, _chain_origin.y)
+	res.position = Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y)  # 结果在选中选项右侧
 	_upper_zone.add_child(res)
 	_chain_nodes.append(res)
-	res.clicked.connect(func(c: CardScn) -> void: c.flip_to(true))
+	res.clicked.connect(func(c: CardScn) -> void: _reveal_result(c, outcome))
+
+## 揭示结果(§3): 封缄 → 屏息 → 翻牌 → 显式档位 → 生成可领取标记
+func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
+	if _result_revealed:
+		return
+	_result_revealed = true
+	await get_tree().create_timer(0.35).timeout  # 封缄→翻牌的基础屏息(§3.1)
+	if not is_instance_valid(card):
+		return
+	card.flip_to(true)  # 翻开后显式露出 tier(卡标题)
+	await get_tree().create_timer(CardScn.FLIP_TIME).timeout
+	if not is_instance_valid(card):
+		return
+	_spawn_claimable_markers(card, outcome)
+
+## 在结果卡旁生成可领取标记(实体 + 经验成长); 放世界(UpperZone), 与结果卡相对位置固定、随镜头一起动
+func _spawn_claimable_markers(result_card: CardScn, outcome: Dictionary) -> void:
+	var base: Vector2 = result_card.position  # 世界坐标(牌桌上), 锚定结果卡
+	var idx: int = 0
+	var markers: Array = outcome.get("markers", [])
+	for entry in markers:
+		var d: Dictionary = entry
+		var count: int = int(d.get("count", 1))
+		for k in count:
+			_make_claimable(String(d["type"]), String(d["kind"]), base, idx)
+			idx += 1
+	var exps: Array = outcome.get("exp_deltas", [])
+	for entry in exps:
+		var d: Dictionary = entry
+		_make_claimable(String(d["line"]), "growth", base, idx)  # 经验 → 成长标记(单独通道)
+		idx += 1
+
+## 生成单个可领取标记(结果卡下方排开; 计入 _chain_nodes 以便清链时回收未领取的)
+func _make_claimable(res_type: String, kind: String, base: Vector2, idx: int) -> void:
+	var m := MarkerScn.new()
+	m.res_type = res_type
+	m.kind = MarkerScn.Kind.GROWTH if kind == "growth" else MarkerScn.Kind.ENTITY
+	m.claimable = true
+	m.position = base + Vector2(float(idx % 4) * 42.0 - 63.0, 165.0 + float(idx / 4) * 42.0)
+	_upper_zone.add_child(m)  # 世界(随牌桌), 与结果卡相对固定
+	_chain_nodes.append(m)
+	m.claimed.connect(_claim_marker)
+
+## 领取标记(§3.1): 标记在世界, 飞向手牌(把手牌屏幕坐标转世界坐标作终点) → 收入后释放
+func _claim_marker(m: Marker) -> void:
+	_chain_nodes.erase(m)
+	var target: Vector2 = m.position + Vector2(0, 220)  # 兜底(无对应手牌时下沉)
+	var target_card: Node2D = _hand_cards.get(m.res_type, null)
+	if target_card != null:
+		# 手牌在 CanvasLayer(屏幕坐标), 标记在世界 → 屏幕坐标逆变换回世界坐标
+		var canvas_xform := get_viewport().get_canvas_transform()
+		target = canvas_xform.affine_inverse() * target_card.position
+	var tw := m.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(m, "position", target, 0.40).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_property(m, "scale", Vector2(0.3, 0.3), 0.40)
+	tw.chain().tween_callback(m.queue_free)
 
 ## 清空当前因果链(抽新牌 / 离开时; 锚点簇与手牌不动)
 func _clear_chain() -> void:
@@ -204,8 +294,10 @@ func _clear_chain() -> void:
 		if is_instance_valid(node):
 			node.queue_free()
 	_chain_nodes.clear()
+	_option_cards.clear()
 	_options_shown = false
 	_result_shown = false
+	_result_revealed = false
 
 ## 牌桌平移(B③#1): 仅空白处的左键拖拽到达此处(卡/标记已消费各自事件)
 ##

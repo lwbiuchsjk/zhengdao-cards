@@ -21,27 +21,30 @@ const RES_COLORS: Dictionary = {
 
 signal drag_started(marker: Marker)
 signal dropped(marker: Marker, at_global: Vector2)
+signal claimed(marker: Marker)
 
 @export var res_type: String = "physique"  # physique/craft/insight/xinxing/social/gold
 @export var kind: Kind = Kind.ENTITY
+@export var claimable: bool = false  # 领取模式: 点击=领取(飞向手牌, §3.1), 非拖拽投入
 
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
 var _home_pos: Vector2 = Vector2.ZERO  # 撤回归位锚点
 var _return_tween: Tween
+var _area: Area2D
 
 func _ready() -> void:
 	_home_pos = position
 	z_index = 20  # 标记常在卡之上
-	var area := Area2D.new()
-	area.input_pickable = true
+	_area = Area2D.new()
+	_area.input_pickable = true
 	var shape := CollisionShape2D.new()
 	var circle := CircleShape2D.new()
 	circle.radius = RADIUS
 	shape.shape = circle
-	area.add_child(shape)
-	add_child(area)
-	area.input_event.connect(_on_area_input)
+	_area.add_child(shape)
+	add_child(_area)
+	_area.input_event.connect(_on_area_input)
 	queue_redraw()
 
 ## 绘制标记: 实体 = 实心圆 / 成长 = 空心环; 颜色按资源类型
@@ -53,12 +56,17 @@ func _draw() -> void:
 	else:
 		draw_arc(Vector2.ZERO, RADIUS, 0, TAU, 24, col, 3.0)
 
-## Area2D 输入: 左键按下 = 起拖(消费事件, 不触发牌桌平移)
+## Area2D 输入: 左键按下 →
+##   领取模式: 发 claimed(点击领取, §3.1); 否则: 起拖(投入)。均消费事件不触发牌桌平移。
 func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		get_viewport().set_input_as_handled()
+		if claimable:
+			_area.input_pickable = false  # 一次性: 关掉拾取, 防飞行 tween 期间重复领取(P2)
+			claimed.emit(self)
+			return
 		_dragging = true
 		_drag_offset = get_global_mouse_position() - global_position
-		get_viewport().set_input_as_handled()
 		drag_started.emit(self)
 
 ## 拖拽中跟随鼠标 + 释放落点; 全程消费输入 → 镜头不平移(B③#1)
