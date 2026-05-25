@@ -38,6 +38,7 @@ signal clicked(card: Card)
 @export var title_text: String = ""
 @export var body_text: String = ""
 @export var start_face_up: bool = true
+@export var back_label: String = ""  # 牌背中心标注(空则用类型名); 区分多种卡背(事件牌库/事件/结果)
 
 var _state: State = State.FACE_UP
 var _face_up: bool = true
@@ -48,6 +49,7 @@ var _scale_tween: Tween
 var _title_label: Label
 var _body_label: Label
 var _type_label: Label
+var _back_label: Label  # 牌背中心标注(仅牌背时显示)
 
 # 跨卡共享的 CJK 字体(默认字体不含中文字形, 用系统字体兜底; Windows 上命中雅黑)
 static var _cjk_font: SystemFont
@@ -82,6 +84,18 @@ func _build_visual() -> void:
 	_body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_body_label.size = Vector2(SIZE.x - 20, SIZE.y - 90)
 	add_child(_body_label)
+	# 牌背中心标注: 居中, 仅牌背时显示; 空则回退到类型名
+	var back_text: String = back_label if not back_label.is_empty() else String(TYPE_LABELS[card_type])
+	_back_label = Label.new()
+	_back_label.text = back_text
+	_back_label.position = top_left
+	_back_label.size = SIZE
+	_back_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_back_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_back_label.add_theme_font_override("font", get_cjk_font())
+	_back_label.add_theme_font_size_override("font_size", 22)
+	_back_label.add_theme_color_override("font_color", Color("9a9ab0"))
+	add_child(_back_label)
 	# 拾取区(Area2D, 居中覆盖整卡)
 	var area := Area2D.new()
 	area.input_pickable = true
@@ -116,9 +130,9 @@ func _draw() -> void:
 	else:
 		draw_rect(rect, Color("2b2b3a"), true)
 		draw_rect(rect, Color("6a6a80"), false, 2.0)
-		# 牌背对角斜纹(占位仪式感)
-		draw_line(-SIZE * 0.5, SIZE * 0.5, Color("44445a"), 2.0)
-		draw_line(Vector2(SIZE.x * 0.5, -SIZE.y * 0.5), Vector2(-SIZE.x * 0.5, SIZE.y * 0.5), Color("44445a"), 2.0)
+		# 内框装饰(留出中心给背面标注, 避免遮挡)
+		var inset := Rect2(rect.position + Vector2(12, 12), rect.size - Vector2(24, 24))
+		draw_rect(inset, Color("44445a"), false, 1.5)
 
 # ---------- 翻牌(§3 揭示用, S1 先实现基础翻转) ----------
 
@@ -149,11 +163,16 @@ func flip_to(face_up: bool) -> void:
 func toggle_flip() -> void:
 	flip_to(not _face_up)
 
+## 当前是否牌面朝上(链流程判定用)
+func is_face_up() -> bool:
+	return _face_up
+
 ## 按当前 _face_up 刷新卡面绘制 + 文字显隐
 func _refresh_face() -> void:
 	_type_label.visible = _face_up
 	_title_label.visible = _face_up
 	_body_label.visible = _face_up
+	_back_label.visible = not _face_up
 	queue_redraw()
 
 # ---------- hover / click ----------
