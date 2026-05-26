@@ -58,9 +58,13 @@ func _draw() -> void:
 
 ## Area2D 输入: 左键按下 →
 ##   领取模式: 发 claimed(点击领取, §3.1); 否则: 起拖(投入)。均消费事件不触发牌桌平移。
+##   同时通知牌桌"按下落在标记上"(聚焦取消判定)。
 func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		get_viewport().set_input_as_handled()
+		for table in get_tree().get_nodes_in_group("card_table"):
+			if table.has_method("notify_pickable_press"):
+				table.notify_pickable_press()
 		if claimable:
 			_area.input_pickable = false  # 一次性: 关掉拾取, 防飞行 tween 期间重复领取(P2)
 			claimed.emit(self)
@@ -98,3 +102,12 @@ func return_home() -> void:
 ## 更新撤回锚点(投入承载落定后调用)
 func set_home(pos: Vector2) -> void:
 	_home_pos = pos
+
+## 读 home 位置(card_table 判定 click vs drag 用)
+func get_home_pos() -> Vector2:
+	return _home_pos
+
+## 启停拾取(投入后关掉, 切换/取消飞回时再开; 防被重复拖)
+func set_pickable(enabled: bool) -> void:
+	if _area != null:
+		_area.input_pickable = enabled

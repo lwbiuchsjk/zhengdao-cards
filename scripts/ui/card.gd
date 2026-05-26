@@ -43,6 +43,7 @@ signal clicked(card: Card)
 var _state: State = State.FACE_UP
 var _face_up: bool = true
 var _hovered: bool = false
+var _selected: bool = false  # 聚焦选中态(卡面高亮边框)
 var _base_scale: Vector2 = Vector2.ONE
 var _flip_tween: Tween
 var _scale_tween: Tween
@@ -127,6 +128,8 @@ func _draw() -> void:
 	if _face_up:
 		draw_rect(rect, TYPE_COLORS[card_type], true)
 		draw_rect(rect, Color("ece7da"), false, 2.0)  # 描边
+		if _selected:
+			draw_rect(rect.grow(5.0), Color("ffd86a"), false, 5.0)  # 聚焦选中高亮
 	else:
 		draw_rect(rect, Color("2b2b3a"), true)
 		draw_rect(rect, Color("6a6a80"), false, 2.0)
@@ -167,6 +170,11 @@ func toggle_flip() -> void:
 func is_face_up() -> bool:
 	return _face_up
 
+## 设置聚焦选中态(高亮边框)
+func set_selected(on: bool) -> void:
+	_selected = on
+	queue_redraw()
+
 ## 按当前 _face_up 刷新卡面绘制 + 文字显隐
 func _refresh_face() -> void:
 	_type_label.visible = _face_up
@@ -201,8 +209,11 @@ func _animate_scale(to: Vector2) -> void:
 	_scale_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_scale_tween.tween_property(self, "scale", to, 0.12)
 
-## Area2D 输入: 左键按下 = 点击(消费事件, 不触发牌桌平移)
+## Area2D 输入: 左键按下 = 点击(消费事件, 不触发牌桌平移); 同时通知牌桌"按下落在卡上"(聚焦取消判定)
 func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		get_viewport().set_input_as_handled()
+		for table in get_tree().get_nodes_in_group("card_table"):
+			if table.has_method("notify_pickable_press"):
+				table.notify_pickable_press()
 		clicked.emit(self)
