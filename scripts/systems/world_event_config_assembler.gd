@@ -619,6 +619,17 @@ static func _assemble_choice_points(tables: Dictionary) -> Dictionary:
 			cp_map[cp_id] = {"id": cp_id, "options": []}
 			cp_order.append(cp_id)
 
+		# Line B S1 期新增 4 字段读取 (空值=default, 完全向后兼容):
+		# - is_base: 是否基础选项必出 (空=false)
+		# - weight: 候选池抽取权重 (空=1)
+		# - trigger_condition: 触发门控表达式 (空=无门控)
+		# - allow_desperate: 是否允许孤注一掷 (空=true, S5 期用)
+		# 详见 [[前端骨架_LineB_实施]] §3.10。
+		var is_base_str: String = str(row.get("is_base", "")).strip_edges().to_lower()
+		var weight_str: String = str(row.get("weight", "")).strip_edges()
+		var trigger_cond: String = str(row.get("trigger_condition", "")).strip_edges()
+		var allow_desp_str: String = str(row.get("allow_desperate", "")).strip_edges().to_lower()
+
 		var option = {
 			"id": option_id,
 			"text": str(row.get("text", "")),
@@ -630,7 +641,12 @@ static func _assemble_choice_points(tables: Dictionary) -> Dictionary:
 				"forcedNextEventId": "",
 				"chainContextPatch": {}
 			},
-			"_display_order": _to_int(row.get("display_order", "0"), 0)
+			"_display_order": _to_int(row.get("display_order", "0"), 0),
+			# Line B S3 字段 (向后兼容默认值):
+			"is_base": is_base_str == "true",                # 空/false → false
+			"weight": _to_int(weight_str, 1) if not weight_str.is_empty() else 1,
+			"trigger_condition": trigger_cond,                # 空 → 无门控
+			"allow_desperate": allow_desp_str != "false",    # 空/true → true; 仅 "false" → false
 		}
 
 		var cp_item: Dictionary = cp_map[cp_id]

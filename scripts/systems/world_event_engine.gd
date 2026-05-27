@@ -2001,9 +2001,50 @@ func _array_has_any(left: Array, right: Array) -> bool:
 # 功能：构建事件对应的选项集合。
 # 说明：为每个选项标记三态：invisible、disabled、selectable。
 func _build_option_set(choice_point_def: Dictionary) -> Array:
+	# Line B S3: 选项层调度 (is_base 必出 + weight 加权 + trigger_condition 门控)。
+	# 向后兼容: 旧数据无新字段时 is_base=false / weight=1 / trigger_condition=空 → 全产出。
+	# 详见 [[前端骨架_LineB_实施]] §3.10。
+	const MAX_OPTIONS := 3
+	var all_options: Array = choice_point_def.get("options", [])
+
+	# 第一步: trigger_condition 门控过滤 (空 = 放行)
+	var filtered: Array = []
+	for option_variant in all_options:
+		var option_def: Dictionary = option_variant
+		var tc: String = str(option_def.get("trigger_condition", "")).strip_edges()
+		if tc.is_empty() or _evaluate_condition(tc):
+			filtered.append(option_def)
+
+	# 第二步: 分组 — 基础必出 vs 候选池
+	var base_options: Array = []
+	var pool_options: Array = []
+	for option_variant in filtered:
+		var option_def: Dictionary = option_variant
+		if bool(option_def.get("is_base", false)):
+			base_options.append(option_def)
+		else:
+			pool_options.append(option_def)
+
+	# 第三步: 必出全部产出 + 剩余配额从候选池按 weight 抽取
+	var selected: Array = base_options.duplicate()
+	# 配额边界: 基础选项数已 >= MAX_OPTIONS 时不再补充 (设计如此则照搬, 即便超 3)
+	var quota: int = MAX_OPTIONS - selected.size()
+	if quota > 0 and not pool_options.is_empty():
+		if pool_options.size() <= quota:
+			# 候选不超配额: 全部产出 (向后兼容旧行为, 现有 mvp 数据走这里)
+			selected.append_array(pool_options)
+		else:
+			# 候选超配额: 按 weight 加权抽 quota 个 (无重复)
+			selected.append_array(_weighted_sample_options(pool_options, quota))
+
+	# 第四步: 按 _display_order 排序 (保持原显示顺序稳定)
+	selected.sort_custom(func(a, b):
+		return int((a as Dictionary).get("_display_order", 0)) < int((b as Dictionary).get("_display_order", 0))
+	)
+
+	# 第五步: 为每个选项打 state 标识 (原 _build_option_set 行为)
 	var out: Array = []
-	var options: Array = choice_point_def.get("options", [])
-	for option_variant in options:
+	for option_variant in selected:
 		var option_def: Dictionary = option_variant
 		var item := option_def.duplicate(true)
 		# 说明：选项三态分别表示不显示、显示但不可选、可选。
@@ -2015,6 +2056,36 @@ func _build_option_set(choice_point_def: Dictionary) -> Array:
 		item["state"] = state
 		out.append(item)
 	return out
+
+
+# 功能: 从候选池按 weight 加权无重复抽 n 个选项。
+# 算法: 累积权重 + 单次随机 + 抽取后移除; 时间复杂度 O(n * pool.size)。
+# 用于 Line B S3 选项产出 — 候选数 > 配额时收敛到 MAX_OPTIONS。
+func _weighted_sample_options(pool: Array, n: int) -> Array:
+	var working: Array = pool.duplicate()
+	var picked: Array = []
+	for i in n:
+		if working.is_empty():
+			break
+		# 计算总权重
+		var total: int = 0
+		for opt_v in working:
+			total += max(1, int((opt_v as Dictionary).get("weight", 1)))
+		if total <= 0:
+			break
+		# 加权随机抽取
+		var roll: int = randi() % total
+		var acc: int = 0
+		var pick_idx: int = -1
+		for j in working.size():
+			acc += max(1, int((working[j] as Dictionary).get("weight", 1)))
+			if roll < acc:
+				pick_idx = j
+				break
+		if pick_idx >= 0:
+			picked.append(working[pick_idx])
+			working.remove_at(pick_idx)
+	return picked
 
 # 功能：输出上层使用的选项简版结构。
 # 说明：仅返回 id、text、state，避免暴露内部结算细节。
