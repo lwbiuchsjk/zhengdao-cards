@@ -18,6 +18,8 @@ const DEFAULT_PATHS := {
 	"location_graph": "res://scripts/config/location_graph.csv",
 	"affinity": "res://scripts/config/affinity.csv",
 	"attribute_names": "res://scripts/config/attribute_names.csv",
+	# S1 期占位：表结构 + .import 已建；S4 期接 loader 实现升阶机制（详见 [[前端骨架_LineB_实施]] §3.1）
+	"ability_progression": "res://scripts/config/ability_progression.csv",
 	"world_event_csv_dir": "res://scripts/config/world_event_mvp"
 }
 

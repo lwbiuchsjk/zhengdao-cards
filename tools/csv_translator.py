@@ -622,7 +622,10 @@ def generate_event_presentations_csv(cards: list[dict[str, Any]]) -> list[dict[s
 
 
 def generate_options_csv(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """生成 options.csv 行。"""
+    """生成 options.csv 行。
+    Line B S1 期扩展 4 字段（is_base / weight / trigger_condition / allow_desperate）；
+    自动生成时一律填默认值（is_base=false / weight=1 / trigger_condition=空 / allow_desperate=true），
+    设计稿支持选项层调度元数据前由人工/LLM 在 CSV 中按需覆盖。详见 [[前端骨架_LineB_实施]] §3.1。"""
     rows: list[dict[str, str]] = []
     for card in cards:
         event_id = card["event_id"]
@@ -632,6 +635,11 @@ def generate_options_csv(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "choice_point_id": f"cp_{event_id}",
                 "text": opt["text"],
                 "display_order": str(idx),
+                # S1 期默认值（设计稿未提供选项层调度时的语义）：
+                "is_base": "false",          # 默认非基础选项（候选池模式）
+                "weight": "1",                # 默认权重 1
+                "trigger_condition": "",      # 默认无门控
+                "allow_desperate": "true",    # 默认允许孤注一掷（S5 期接行为）
             })
     return rows
 
@@ -822,6 +830,9 @@ CSV_HEADERS = {
     ],
     "options.csv": [
         "option_id", "choice_point_id", "text", "display_order",
+        # Line B S1 期新增（选项层调度元数据 + 孤注一掷开关），详见 [[前端骨架_LineB_实施]] §3.1。
+        # 自动生成时由 generate_options_csv 填默认值；手工 CSV 可覆盖。
+        "is_base", "weight", "trigger_condition", "allow_desperate",
     ],
     "option_rules.csv": [
         "option_id", "rule_type", "branch", "left", "op", "right",

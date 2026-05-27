@@ -71,10 +71,19 @@ RESOURCE_KEYS = {"spirit", "gold"}
 DISALLOWED_COST_KEYS = {"hp", "energy"}
 
 # option_rules 的合法 rule_type
+# Line B S1 期新增 check_whitelist（鉴定白名单语义；与 cost 分离，cost 沿用前置代价 b 语义）。
+# 详见 [[前端骨架_LineB_实施]] §3.1 + [[配置翻译指南]] 锚点 rule_types。
 KNOWN_RULE_TYPES = {
     "visibility", "eligibility", "cost",
-    "check", "resolution", "preemptive_bet",
+    "check", "check_whitelist", "resolution", "preemptive_bet",
 }
+
+# attribute_names.csv 合法 category 值。Line B S1 期新增 hidden_attribute（半隐性属性，
+# 如 *_exp 经验值，由引擎自动累加，不应在事件卡 effects / cost / check_whitelist 中直接引用）。
+KNOWN_ATTRIBUTE_CATEGORIES = {"attribute", "resource", "hidden_attribute"}
+
+# 半隐性 category：不参与玩家显式投入 / 消耗 / 鉴定白名单
+HIDDEN_ATTRIBUTE_CATEGORY = "hidden_attribute"
 
 # event_conditions 的合法 condition_type
 KNOWN_CONDITION_TYPES = {
@@ -144,7 +153,7 @@ def load_csv(path: Path) -> list[dict[str, str]]:
 
 
 def load_attribute_keys(ref_dir: Path) -> set[str]:
-    """从 attribute_names.csv 读取合法属性 key。"""
+    """从 attribute_names.csv 读取合法属性 key（全部 category，含 hidden_attribute）。"""
     path = ref_dir / "attribute_names.csv"
     if not path.exists():
         return set()
@@ -155,6 +164,22 @@ def load_attribute_keys(ref_dir: Path) -> set[str]:
         if key:
             keys.add(key)
     return keys
+
+
+def load_attribute_category_map(ref_dir: Path) -> dict[str, str]:
+    """从 attribute_names.csv 读取 internal_key → category 映射。
+    Line B S1 期新增：区分 hidden_attribute（半隐性），cost / check_whitelist 校验需排除。"""
+    path = ref_dir / "attribute_names.csv"
+    if not path.exists():
+        return {}
+    rows = load_csv(path)
+    result: dict[str, str] = {}
+    for row in rows:
+        key = row.get("internal_key", "").strip()
+        category = row.get("category", "").strip()
+        if key:
+            result[key] = category
+    return result
 
 
 def is_player_attr_key(key: str, attribute_keys: set[str]) -> bool:
@@ -236,6 +261,81 @@ def validate(csv_dir: Path, ref_dir: Path) -> ValidationResult:
     attribute_keys = load_attribute_keys(ref_dir)
     if not attribute_keys:
         result.add_p2(f"未找到 {ref_dir / 'attribute_names.csv'}，跳过 key 合法性检查")
+    # Line B S1：category 映射，用于排除 hidden_attribute 不参与显式 cost / check_whitelist 引用
+    attribute_category_map = load_attribute_category_map(ref_dir)
+    hidden_attribute_keys: set[str] = {
+        k for k, c in attribute_category_map.items() if c == HIDDEN_ATTRIBUTE_CATEGORY
+    }
+    # 公共可投入/可消耗的属性 key 集合（排除 hidden_attribute）
+    public_attribute_keys: set[str] = attribute_keys - hidden_attribute_keys
+
+    # ── Line B S1: attribute_names.csv category 合法性 ──
+    # 防御：避免 typo / 误改 category 让 hidden_attribute 被识别为普通 attribute。
+    for row in load_csv(ref_dir / "attribute_names.csv"):
+        cat = row.get("category", "").strip()
+        key = row.get("internal_key", "").strip()
+        if cat and cat not in KNOWN_ATTRIBUTE_CATEGORIES:
+            result.add_p1(
+                f"attribute_names.csv: '{key}' 使用未知 category '{cat}'"
+                f"（合法: {sorted(KNOWN_ATTRIBUTE_CATEGORIES)}）"
+            )
+
+    # ── Line B S1: options.csv 新字段轻量值校验（向后兼容：空值=default）──
+    # 详见 [[前端骨架_LineB_实施]] §3.1 + [[配置翻译指南]] 表 5 字段约定。
+    # 空值合法（视为 default）；非空值必须符合类型枚举。S3 期接调度逻辑前先用 validator 阻断错填。
+    BOOL_VALUES = {"true", "false"}
+    for row in options:
+        oid = row.get("option_id", "").strip()
+        # is_base / allow_desperate: 空 或 true/false（不区分大小写）
+        for fld in ("is_base", "allow_desperate"):
+            v = row.get(fld, "").strip()
+            if v and v.lower() not in BOOL_VALUES:
+                result.add_p1(
+                    f"options.csv: '{oid}' {fld}='{v}' 非法（必须为 true/false 或留空）"
+                )
+        # weight: 空 或 正整数
+        w = row.get("weight", "").strip()
+        if w:
+            try:
+                wn = int(w)
+                if wn <= 0:
+                    result.add_p1(
+                        f"options.csv: '{oid}' weight='{w}' 必须为正整数（>=1）"
+                    )
+            except ValueError:
+                result.add_p1(
+                    f"options.csv: '{oid}' weight='{w}' 不是有效整数"
+                )
+        # trigger_condition: S1 期只允许留空（S3 期接 event condition 解析器后放开）
+        tc = row.get("trigger_condition", "").strip()
+        if tc:
+            result.add_p2(
+                f"options.csv: '{oid}' trigger_condition='{tc}' 非空 — "
+                "S1 期 validator 暂未实现门控表达式解析（S3 期支持，见 LineB §3.1）"
+            )
+
+    # ── Line B S1: ability_progression.csv schema 校验（空表合法）──
+    # S1 期表存在 + 字段名正确即可，内容由 S4 期填。
+    ability_prog_path = ref_dir / "ability_progression.csv"
+    if ability_prog_path.exists():
+        expected_fields = {"line_key", "from_stage", "to_stage", "exp_required"}
+        with open(ability_prog_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            actual_fields = set(reader.fieldnames or [])
+            if actual_fields != expected_fields:
+                result.add_p1(
+                    f"ability_progression.csv: 字段不符 schema; "
+                    f"期望 {sorted(expected_fields)}, 实际 {sorted(actual_fields)}"
+                )
+            # 内容行（如有）按 line_key 合法性校验
+            valid_line_keys = {"physique", "craft", "insight", "social"}
+            for row in reader:
+                lk = row.get("line_key", "").strip()
+                if lk and lk not in valid_line_keys:
+                    result.add_p2(
+                        f"ability_progression.csv: line_key '{lk}' 不在 "
+                        f"{sorted(valid_line_keys)} 内"
+                    )
 
     # ── 构建索引 ──
     event_ids: set[str] = {
@@ -309,6 +409,39 @@ def validate(csv_dir: Path, ref_dir: Path) -> ValidationResult:
         if rt and rt not in KNOWN_RULE_TYPES:
             oid = row.get("option_id", "")
             result.add_p2(f"option_rules: '{oid}' 使用未知 rule_type '{rt}'")
+
+    # ── 检查 5.1: check_whitelist 行专属校验（Line B S1 新增）──
+    # key 字段语义：| 分隔的资源类型列表（如 'physique|craft|insight'）。每元素必须是公共
+    # attribute key（排除 hidden_attribute）或 RESOURCE_KEYS；不允许 hp/energy 等已废弃 key。
+    if public_attribute_keys or attribute_keys:
+        for row in option_rules:
+            rt = row.get("rule_type", "").strip()
+            if rt != "check_whitelist":
+                continue
+            oid = row.get("option_id", "")
+            key = row.get("key", "").strip()
+            if not key:
+                result.add_p1(f"option_rules: '{oid}' check_whitelist 缺 key（资源类型列表）")
+                continue
+            elements = [e.strip() for e in key.split("|") if e.strip()]
+            if not elements:
+                result.add_p1(f"option_rules: '{oid}' check_whitelist key='{key}' 解析为空列表")
+                continue
+            for elem in elements:
+                if elem in DISALLOWED_COST_KEYS:
+                    result.add_p1(
+                        f"option_rules: '{oid}' check_whitelist 含已废弃 key '{elem}'"
+                    )
+                elif elem in hidden_attribute_keys:
+                    result.add_p1(
+                        f"option_rules: '{oid}' check_whitelist 含半隐性属性 '{elem}'"
+                        "（hidden_attribute 由引擎自动累加，不应作鉴定白名单）"
+                    )
+                elif not (elem in public_attribute_keys or elem in RESOURCE_KEYS):
+                    result.add_p1(
+                        f"option_rules: '{oid}' check_whitelist key 元素 '{elem}' "
+                        "不是合法属性/资源"
+                    )
 
     # ── 检查 6: condition_type 合法性 ──
     for row in event_conditions:
@@ -572,6 +705,12 @@ def validate(csv_dir: Path, ref_dir: Path) -> ValidationResult:
                     result.add_p1(
                         f"option_rules: '{oid}' cost key '{key}' 已被议题 A 决议移除，"
                         f"请改为 cost spirit 或删除 cost 行（[[UI风格快速翻调_demo期进度]] §议题 A）"
+                    )
+                elif key in hidden_attribute_keys:
+                    # Line B S1：半隐性属性（*_exp 等）由引擎自动累加，不应作前置代价
+                    result.add_p1(
+                        f"option_rules: '{oid}' cost key '{key}' 是半隐性属性（hidden_attribute）"
+                        "，由引擎自动累加，不应作前置代价"
                     )
                 elif not is_player_attr_key(key, attribute_keys):
                     result.add_p1(

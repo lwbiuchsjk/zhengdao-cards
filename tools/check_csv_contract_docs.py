@@ -31,6 +31,10 @@ REQUIRED_ANCHORS = [
     "condition_types",
     "presents_values",
     "presentation_condition",  # 需求 2 新增：event_presentations.csv condition 差分字段
+    "option_outcome_text",     # MVP A 新增：option_outcomes.csv 字段约定 + branch fallback 链
+    # Line B S1 期新增（2026-05-27）：
+    "attribute_categories",    # attribute_names.csv category 合法集合（含 hidden_attribute）
+    "ability_progression",     # ability_progression.csv schema（S1 期空表，S4 期填）
 ]
 
 
