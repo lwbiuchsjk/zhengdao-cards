@@ -14,6 +14,8 @@ const LocationGraph := preload("res://scripts/models/location_graph.gd")
 const AffinityMapClass := preload("res://scripts/models/affinity_map.gd")
 const ReflectionStateMachine := preload("res://scripts/systems/reflection_state_machine.gd")
 const CreationStateMachine := preload("res://scripts/systems/creation_state_machine.gd")
+# Line B S2: 资源标记池 (单值→卡+标记数; 满容量丢弃多余; 详见 [[前端骨架_LineB_实施]] §3.5-§3.9)
+const ResourceMarkerPool := preload("res://scripts/systems/resource_marker_pool.gd")
 
 var world_state: Dictionary = {}
 var events: Array = []
@@ -3587,10 +3589,30 @@ func _apply_world_state_patch(patch: Dictionary) -> void:
 
 	var player_patch: Dictionary = patch.get("player", {})
 	if not player_patch.is_empty():
+		# Line B S2: 资源标记池路径 (key 是 *_token / xinxing_token / social_token / gold)
+		# 走 ResourceMarkerPool, 由其处理 capacity 上限 (满容量丢弃多余, 与 §7.2 资源稀缺一致)。
+		# 非 token key (如 *_exp 经验值、attribute 品质 physique/craft/insight、xinxing 心性值等)
+		# 保持 vibe-test 单值累加路径。详见 [[前端骨架_LineB_实施]] §3.6。
 		for key in player_patch.keys():
 			var player_key := str(key)
-			var current := _get_player_value(player_key, 0)
-			_set_player_value(player_key, current + int(player_patch[key]))
+			var delta := int(player_patch[key])
+			if player_role_state != null and ResourceMarkerPool.ALL_TOKEN_KEYS.has(player_key):
+				# 标记池路径: produce (delta > 0) / consume (delta < 0); 满容量丢弃多余
+				if delta > 0:
+					ResourceMarkerPool.produce(player_role_state, player_key, delta)
+				elif delta < 0:
+					# consume 不足时不变化 (原子性) — 与 vibe-test 单值会减成负数不同
+					# 这里设计为强 clamp 到 0 (与 csv_validator cost 校验 + UI 投入校验保持一致)
+					# 说明: player_role_state 静态类型为 Variant, 显式注解避免 `:=` 推断警告。
+					var available: int = int(player_role_state.get_resource(player_key, 0))
+					var to_consume: int = min(available, -delta)
+					if to_consume > 0:
+						ResourceMarkerPool.consume(player_role_state, player_key, to_consume)
+				# delta == 0 不操作
+			else:
+				# 单值累加路径 (向后兼容; 非 token key + 无 RoleState 回退)
+				var current := _get_player_value(player_key, 0)
+				_set_player_value(player_key, current + delta)
 		if player_role_state != null:
 			_sync_role_to_world_state()
 
@@ -4151,7 +4173,13 @@ func reflection_adjust_trust(npc_id: String, positive: bool) -> Dictionary:
 func reflection_settle() -> void:
 	clear_cycle_affinity_changes()
 	_reflection_ops_used = 0
-	print("[自省] 结算完成：累积记录已清空，操作次数已重置")
+	# Line B S2: 自省阶段资源标记池基础回流。
+	# 规则: 能力 token 全回流到 capacity / xinxing_token +1 / social_token 不全回 / gold 不重置。
+	# 详见 [[前端骨架_LineB_实施]] §3.5 五类资源规则表 + ResourceMarkerPool.reset_all_for_reflection。
+	if player_role_state != null:
+		ResourceMarkerPool.reset_all_for_reflection(player_role_state)
+		_sync_role_to_world_state()
+	print("[自省] 结算完成：累积记录已清空，操作次数已重置，资源标记池已回流")
 
 # ── 自省状态机代理接口 ─────────────────────────────────────────────
 

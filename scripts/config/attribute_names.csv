@@ -8,6 +8,9 @@ hp,生命,resource,,角色生命值
 energy,精力,resource,1力有不逮/2尚可支撑/3精力充沛,状态；表达当前还能不能继续投入、做事、硬撑
 spirit,心气,resource,1心气低落/2心气平稳/3心气饱满,状态；表达当前还能不能稳住、提着劲往前走。注意与世界参数 morale 区分
 gold,银两,resource,,货币资源
+physique_token,武学标记,resource,0-capacity(capacity 由 physique 品质阶段决定),武学标记池；自省全回流到 capacity；S4 期升阶后 capacity +1
+craft_token,百艺标记,resource,0-capacity(capacity 由 craft 品质阶段决定),百艺标记池；同 physique_token
+insight_token,学识标记,resource,0-capacity(capacity 由 insight 品质阶段决定),学识标记池；同 physique_token
 xinxing_token,心性标记,resource,MVP 1 期固定容量 3,心性标记池；鉴定时按 xinxing 档位切换使用规则（S5 期接行为驱动）
 social,人际,attribute,1-4阶段标记：初识有缘/相交日笃/交游既广/枝叶相连,人际成长值；阶段品质决定人际池容量上限
 social_token,人际标记,resource,容量由 social 阶段决定,人际关系标记池；未分配池→NPC 分配（S6 期接分配机制）
