@@ -3,7 +3,7 @@ class_name ResourceMarkerPool
 
 # ResourceMarkerPool — 资源标记池管理器
 #
-# Line B S2 落地（2026-05-27, 详见 [[前端骨架_LineB_实施]] §3.5-§3.9）
+# Line B S2 落地（2026-05-27, 详见 [[前端骨架_LineB_实施]] §3.5-§3.12）
 #
 # 职责:
 # - 管理「卡(种类) + 标记数(数量)」双值模型的标记产出/消费/查询。

@@ -14,7 +14,7 @@ const LocationGraph := preload("res://scripts/models/location_graph.gd")
 const AffinityMapClass := preload("res://scripts/models/affinity_map.gd")
 const ReflectionStateMachine := preload("res://scripts/systems/reflection_state_machine.gd")
 const CreationStateMachine := preload("res://scripts/systems/creation_state_machine.gd")
-# Line B S2: 资源标记池 (单值→卡+标记数; 满容量丢弃多余; 详见 [[前端骨架_LineB_实施]] §3.5-§3.9)
+# Line B S2: 资源标记池 (单值→卡+标记数; 满容量丢弃多余; 详见 [[前端骨架_LineB_实施]] §3.5-§3.12)
 const ResourceMarkerPool := preload("res://scripts/systems/resource_marker_pool.gd")
 
 var world_state: Dictionary = {}
@@ -2003,7 +2003,7 @@ func _array_has_any(left: Array, right: Array) -> bool:
 func _build_option_set(choice_point_def: Dictionary) -> Array:
 	# Line B S3: 选项层调度 (is_base 必出 + weight 加权 + trigger_condition 门控)。
 	# 向后兼容: 旧数据无新字段时 is_base=false / weight=1 / trigger_condition=空 → 全产出。
-	# 详见 [[前端骨架_LineB_实施]] §3.10。
+	# 详见 [[前端骨架_LineB_实施]] §3.13。
 	const MAX_OPTIONS := 3
 	var all_options: Array = choice_point_def.get("options", [])
 
@@ -3663,7 +3663,7 @@ func _apply_world_state_patch(patch: Dictionary) -> void:
 		# Line B S2: 资源标记池路径 (key 是 *_token / xinxing_token / social_token / gold)
 		# 走 ResourceMarkerPool, 由其处理 capacity 上限 (满容量丢弃多余, 与 §7.2 资源稀缺一致)。
 		# 非 token key (如 *_exp 经验值、attribute 品质 physique/craft/insight、xinxing 心性值等)
-		# 保持 vibe-test 单值累加路径。详见 [[前端骨架_LineB_实施]] §3.6。
+		# 保持 vibe-test 单值累加路径。详见 [[前端骨架_LineB_实施]] §3.9。
 		for key in player_patch.keys():
 			var player_key := str(key)
 			var delta := int(player_patch[key])
