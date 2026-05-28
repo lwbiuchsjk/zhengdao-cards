@@ -1,0 +1,381 @@
+extends RefCounted
+class_name EngineDataSource
+
+# EngineDataSource — Line A 卡牌前端 / Line B 引擎 的桥接适配器
+#
+# Line B S8.2 落地（2026-05-27, 详见 [[前端骨架_LineB_实施]] §S8）
+#
+# 职责:
+# - 在前端表现层 (card_table.gd) 与引擎 (WorldEventEngine) 之间做形状适配。
+# - 不持有任何业务逻辑; 算式调 MarkerCheckResolver, 标记账单调 ResourceMarkerPool。
+# - 与 mock_data.gd 同形 API (events_for_pile / options_for_event /
+#   tier_from_invest / outcome_for_option) — card_table 通过 USE_ENGINE 开关二选一。
+#
+# 与 mock_data.gd 的关系:
+# - mock_data.gd 保留作 USE_ENGINE=false fallback (调试 / 回归测试用)。
+# - 两者实现的接口签名一致, 由 card_table.gd 顶部 _data_source 字段统一调用。
+#
+# 待完善 (推进 S8.3-S8.7 时一并处理):
+# - difficulty (D) 字段当前 CSV 无承载, 暂硬编码默认值 3 (FALLBACK_DIFFICULTY)。
+#   S8.5 与用户讨论是否在 options.csv 加 invest_difficulty 字段, 或派生自
+#   check_whitelist 长度。
+# - exp_deltas 当前留空 (S4 期经验升阶模块接通后填充)。
+
+const WorldEventEngineScn := preload("res://scripts/systems/world_event_engine.gd")
+const ConfigRuntimeScn := preload("res://scripts/systems/config_runtime.gd")
+const MarkerCheckResolverScn := preload("res://scripts/systems/marker_check_resolver.gd")
+const ResourceMarkerPoolScn := preload("res://scripts/systems/resource_marker_pool.gd")
+const MockDataScn := preload("res://scripts/ui/mock_data.gd")
+
+# 占位: 当 option 的 check 字段未提供"投入鉴定难度 D"时的兜底值。
+# S8.5 期决议 CSV 字段落地后改为读取真实字段。
+const FALLBACK_DIFFICULTY := 3
+
+# 选项类型枚举 — 与 MockData.OptType 完全一致 (前端读法一致, 互换不影响 card_table)
+enum OptType { CHECK, DIRECT }
+
+# ============================================================
+# 状态
+# ============================================================
+
+var _engine: WorldEventEngine = null
+var _runtime: ConfigRuntime = null
+var _player: RoleState = null
+# choice_points 副本: 适配器从此查 option_def 取 check / whitelist / difficulty 等字段。
+# 不直接访问 engine private _choice_point_map, 保持 engine 接口边界。
+var _choice_points_by_id: Dictionary = {}
+# 当前 pending 的 choice_point_id (由 events_for_pile 触发 preview 时记下, options_for_event 与 outcome_for_option 用)。
+var _pending_choice_point_id: String = ""
+# 当前 pending 事件 engine 实际筛选后的可见选项 id 集合 (S3 _build_option_set 调度结果)。
+# options_for_event 以此过滤 cp_def.options, 避免暴露 trigger_condition / weight 被收敛掉的选项。
+var _pending_visible_option_ids: Dictionary = {}
+# 当前事件是否已结算 (events_for_pile 抽出 → false; outcome_for_option 结算 → true)。
+# events_for_pile 据此区分"重抽未结算事件" (cancel) vs "结算后抽下一事件" (不 cancel, 保留 turn 推进)。
+var _pending_resolved: bool = true
+
+# ============================================================
+# 生命周期
+# ============================================================
+
+func _init(random_seed: int = 0) -> void:
+	_runtime = ConfigRuntimeScn.shared()
+	var load_result: Dictionary = _runtime.ensure_loaded()
+	if not load_result.get("ok", false):
+		push_error("[EngineDataSource] 配置加载失败: %s" % str(load_result.get("error", "unknown")))
+		return
+	var context: Dictionary = _runtime.build_context()
+	if not context.get("ok", false):
+		push_error("[EngineDataSource] 上下文构建失败: %s" % str(context.get("error", "unknown")))
+		return
+	_player = context.get("player", null)
+	var world_event_data: Dictionary = context.get("world_event", {})
+	_index_choice_points(world_event_data)
+
+	_engine = WorldEventEngineScn.new(random_seed)
+	var inject_result: Dictionary = _engine.load_from_data(
+		world_event_data, context.get("graph", null), _player
+	)
+	if not inject_result.get("ok", false):
+		push_error("[EngineDataSource] 引擎数据注入失败: %s" % str(inject_result.get("error", "unknown")))
+		return
+	print("[EngineDataSource] init OK | events=%d, choice_points=%d" % [
+		(world_event_data.get("events", []) as Array).size(),
+		_choice_points_by_id.size()
+	])
+
+
+# ============================================================
+# 对外接口 (与 MockData 同形)
+# ============================================================
+
+# 功能: 抽下一个事件 — 调 engine.preview_next_turn() + 转换为前端事件卡数据。
+# 返回: { event_id, title, body, has_choice, choice_point_id }
+#       body 取自 presentation.current_item.text; 无展示行时回退空字符串。
+# 透明消化: 开局 / 包结束的 location_select 阶段对 card_table 不可见,
+#           本函数自动选第一个可达地点并再次 preview 直到拿到真事件 (最多 MAX_AUTO_HOPS 次,
+#           防止配置异常死循环)。MVP 1 期 card_table 不接地点选择 UI (设计范围外)。
+const MAX_AUTO_HOPS := 8
+
+func events_for_pile() -> Dictionary:
+	if _engine == null:
+		return {"ok": false, "error": "engine not initialized"}
+	# 卡牌前端"重抽"语义: 玩家在结果前点新事件牌库, 前一次 pending 未结算 → 清掉重新选事件。
+	# engine.cancel_pending_turn 不推 turn 不记历史, 世界状态零副作用。
+	# 已结算分支不 cancel: turn 已在 confirm 中推进, preview 会顺序选下一事件
+	# (包内回合推进, 末位回合才命中 skeleton 系列)。
+	if not _pending_resolved:
+		_engine.cancel_pending_turn()
+	var preview: Dictionary = _engine.preview_next_turn()
+	for hop in MAX_AUTO_HOPS:
+		if not preview.get("ok", false):
+			return {"ok": false, "error": str(preview.get("error", "preview failed"))}
+		var phase := str(preview.get("phase", ""))
+		if phase != "location_select":
+			break
+		# 自动选第一个可达地点 + 再 preview。
+		# 注: 选项 id 是复合的 (loc_select_<loc_id>), 真实地点 id 在 location_id 字段;
+		#     confirm_location_select 接受 location_id, 不接受复合 id。
+		var options: Array = preview.get("options", [])
+		if options.is_empty():
+			return {"ok": false, "error": "location_select with no options"}
+		var first_option: Dictionary = options[0]
+		var loc_id := str(first_option.get("location_id", ""))
+		if loc_id.is_empty():
+			return {"ok": false, "error": "location_select option has empty location_id"}
+		var sel := _engine.confirm_location_select(loc_id)
+		if not sel.get("ok", false):
+			return {"ok": false, "error": "confirm_location_select failed: %s" % str(sel.get("error", ""))}
+		preview = _engine.preview_next_turn()
+	# 防御: location_select drain 耗尽 MAX_AUTO_HOPS 后仍在 location_select 阶段 → 拒绝伪装成事件抽出
+	if str(preview.get("phase", "")) == "location_select":
+		return {"ok": false, "error": "location_select drain exceeded MAX_AUTO_HOPS"}
+	# 抽出事件正文 (取消化前第一屏文字, 作为事件卡 body)
+	var title := str(preview.get("title", ""))
+	var body := _extract_presentation_body(preview)
+	var event_id := str(preview.get("event_id", ""))
+	# 透明消化 presentation 屏: 卡牌前端事件卡只显示一屏正文,
+	# 引擎的多屏叙事推进对 card_table 无意义, 自动 confirm("") 推到 choice / confirm 阶段。
+	# 与 location_select 透明消化同性质 (适配器层抹平 vibe-test/zhengdao 事件语义差)。
+	# 自省事件 (sys_reflection 等) 末屏的 presents=location_select 走专用接口
+	# confirm_reflection_location_select; zhengdao-cards MVP 1 期不接自省 UI (LineB §一·不做)。
+	var hops: int = 0
+	while bool(preview.get("ok", false)) and str(preview.get("phase", "")) == "presentation":
+		preview = _drain_one_presentation_step(preview)
+		hops += 1
+		if hops > MAX_AUTO_HOPS:
+			return {"ok": false, "error": "presentation drain exceeded MAX_AUTO_HOPS"}
+	if not preview.get("ok", false):
+		return {"ok": false, "error": str(preview.get("error", "drain failed"))}
+	_pending_choice_point_id = ""
+	_pending_visible_option_ids.clear()
+	var has_choice := bool(preview.get("has_choice", false))
+	if has_choice:
+		var choice: Dictionary = preview.get("choice", {})
+		_pending_choice_point_id = str(choice.get("choice_point_id", ""))
+		# 记下 engine S3 _build_option_set 筛选后的可见 option id 集合,
+		# 供 options_for_event 过滤 cp_def.options (P2-1 修复)。
+		for opt_v in choice.get("options", []):
+			var opt: Dictionary = opt_v
+			var oid := str(opt.get("id", ""))
+			if not oid.is_empty():
+				_pending_visible_option_ids[oid] = true
+	# 标记: 新事件抽出 → 未结算; outcome_for_option 结算后翻回 true
+	_pending_resolved = false
+	return {
+		"ok": true,
+		"event_id": event_id,
+		"title": title,
+		"body": body,
+		"has_choice": has_choice,
+		"choice_point_id": _pending_choice_point_id,
+	}
+
+
+# 功能: 取当前 pending 事件的选项列表 (供前端展开选项卡)。
+# 返回: [{id, text, opt_type, whitelist, threshold}]
+#       opt_type:    OptType.CHECK / OptType.DIRECT (check 字段非空 ⇒ CHECK)
+#       whitelist:   鉴定可投入的资源类型列表 (从 check.items 派生)
+#       threshold:   MarkerCheckResolver 的投入鉴定难度 D (S8 期占位 FALLBACK_DIFFICULTY)
+func options_for_event() -> Array:
+	if _engine == null or _pending_choice_point_id.is_empty():
+		return []
+	var cp_def: Dictionary = _choice_points_by_id.get(_pending_choice_point_id, {})
+	if cp_def.is_empty():
+		push_warning("[EngineDataSource] choice_point not found: %s" % _pending_choice_point_id)
+		return []
+	# engine S3 _build_option_set 已筛选可见选项 (trigger_condition 门控 + weight 抽取后),
+	# events_for_pile 时已把 preview.choice.options 的 id 集合记入 _pending_visible_option_ids;
+	# 此处取 cp_def.options ∩ visible_ids 拿到完整 option_def (含 check/whitelist 等 preview 不返回的字段)。
+	# 兜底: 若 visible_ids 为空 (异常或非 choice 事件), 返回空列表而非全集, 避免暴露 engine 已排除的选项。
+	var out: Array = []
+	if _pending_visible_option_ids.is_empty():
+		return out
+	for option_variant in cp_def.get("options", []):
+		var option_def: Dictionary = option_variant
+		var option_id := str(option_def.get("id", ""))
+		if not _pending_visible_option_ids.has(option_id):
+			continue
+		out.append({
+			"id": option_id,
+			"text": str(option_def.get("text", "")),
+			"opt_type": _derive_opt_type(option_def),
+			"whitelist": _derive_whitelist(option_def),
+			"threshold": _derive_difficulty(option_def),
+		})
+	return out
+
+
+# 功能: 标记投入数 → tier 决策 (调 MarkerCheckResolver)。
+# 参数: opt_type / invested / difficulty — 来自 card_table 投入循环结束时
+# 返回: "great_success" | "success" | "fail" | "great_fail"
+func tier_from_invest(opt_type: int, invested: int, difficulty: int) -> String:
+	if opt_type != OptType.CHECK:
+		return "success"
+	return MarkerCheckResolverScn.resolve(invested, difficulty)
+
+
+# 功能: 玩家选择选项 + tier 已定 → 引擎结算 + 生成 §3.2 stub 账单。
+# 参数:
+#   option_id — 玩家选的选项 id
+#   tier      — tier_from_invest 返回的档位 (DIRECT 选项传 "success")
+# 返回: §3.2 stub 形状 { markers, tier, exp_deltas, flags }
+#       与 MockData.outcome_for 完全同形, 由 card_table._reveal_result 直接读。
+func outcome_for_option(option_id: String, tier: String) -> Dictionary:
+	if _engine == null:
+		return _empty_outcome(tier)
+	# 应用前 snapshot 标记池, 应用后 diff → deltas 列表。
+	# 这是最干净的取 deltas 方式 (engine 不返回 deltas, 也不暴露 resolution apply hook)。
+	var before := _snapshot_token_counts()
+	var result: Dictionary
+	# DIRECT 选项无 check 字段, vibe-test 路径会直接走 base resolution, 不需要 forced。
+	# CHECK 选项 (含 check 字段) 走 forced_tier 路径, 让引擎按我们算的 tier 选 resolution 分支。
+	if tier == "success" and _is_direct_option(option_id):
+		result = _engine.confirm_pending_turn(option_id)
+	else:
+		result = _engine.confirm_pending_turn_with_forced_tier(option_id, tier)
+	if not result.get("ok", false):
+		push_warning("[EngineDataSource] confirm failed: %s" % str(result.get("error", "unknown")))
+		return _empty_outcome(tier)
+	# 透明消化 outcome 屏: 选项结算后引擎可能追加 outcome 叙事屏 (phase=presentation),
+	# 需继续 confirm("") 推到末屏才真正 advance turn。卡牌前端结果卡已展示 tier+marker,
+	# outcome 叙事屏对 card_table 无意义。
+	var hops: int = 0
+	while bool(result.get("ok", false)) and str(result.get("phase", "")) == "presentation":
+		result = _drain_one_presentation_step(result)
+		hops += 1
+		if hops > MAX_AUTO_HOPS:
+			push_warning("[EngineDataSource] outcome drain exceeded MAX_AUTO_HOPS")
+			break
+	# P2-2: drain 失败不应假装结算完成 — 保 _pending_resolved=false 让下次 events_for_pile 触发 cancel,
+	#       avoid 把未完成结算的世界状态延续到下一回合。
+	if not bool(result.get("ok", false)):
+		push_warning("[EngineDataSource] outcome drain failed: %s" % str(result.get("error", "unknown")))
+		return _empty_outcome(tier)
+	# 结算完成: 标记 turn 已推进, 下次 events_for_pile 不 cancel (顺序选下一事件, 末位才命中 skeleton)
+	_pending_resolved = true
+	var after := _snapshot_token_counts()
+	var deltas := _diff_token_counts(before, after)
+	return ResourceMarkerPoolScn.build_outcome_bill(deltas, tier, [])
+
+
+# 功能: 档位中文名 (与 MockData.tier_label 同形)
+func tier_label(tier: String) -> String:
+	return MockDataScn.tier_label(tier)
+
+
+# ============================================================
+# 内部工具
+# ============================================================
+
+# 索引 choice_points 到 _choice_points_by_id, 供 options_for_event / outcome_for_option 查 option_def。
+func _index_choice_points(world_event_data: Dictionary) -> void:
+	_choice_points_by_id.clear()
+	for cp_variant in world_event_data.get("choice_points", []):
+		var cp: Dictionary = cp_variant
+		var cp_id := str(cp.get("id", ""))
+		if not cp_id.is_empty():
+			_choice_points_by_id[cp_id] = cp
+
+
+# 从 preview 返回结构中抽取 presentation body 文本 (用于事件卡正文)。
+func _extract_presentation_body(preview: Dictionary) -> String:
+	var pres: Dictionary = preview.get("presentation", {})
+	var current_item: Dictionary = pres.get("current_item", {})
+	return str(current_item.get("text", ""))
+
+
+# 推进一屏 presentation: 普通屏走 confirm_pending_turn("");
+# 自省末屏 presents=location_select 走 confirm_reflection_location_select (选第一个候选地点)。
+# zhengdao-cards MVP 1 期不接自省 UI, 自省事件全程透明消化 (LineB §一·不做)。
+func _drain_one_presentation_step(preview: Dictionary) -> Dictionary:
+	var pres: Dictionary = preview.get("presentation", {})
+	var current_item: Dictionary = pres.get("current_item", {})
+	var presents := str(current_item.get("presents", "text"))
+	if presents == "location_select":
+		var ref_options: Array = _engine.get_reflection_location_options()
+		if ref_options.is_empty():
+			return {"ok": false, "error": "reflection location_select: no options"}
+		var first: Dictionary = ref_options[0]
+		var loc_id := str(first.get("location_id", ""))
+		if loc_id.is_empty():
+			return {"ok": false, "error": "reflection location_select: empty location_id"}
+		return _engine.confirm_reflection_location_select(loc_id)
+	return _engine.confirm_pending_turn("")
+
+
+# 派生选项类型: option_def.check 非空 ⇒ CHECK; 否则 DIRECT。
+# 注: assembler 默认 check=null (不是 {}), .get(_, {}) 默认值在 key 存在但值 null 时不生效;
+#     需显式 null check (本模块多处复用此模式 → _option_check_dict 统一封装)。
+func _derive_opt_type(option_def: Dictionary) -> int:
+	var check := _option_check_dict(option_def)
+	if check.is_empty():
+		return OptType.DIRECT
+	return OptType.CHECK
+
+
+# 派生白名单: 从 check.items 提取 key 列表 (鉴定可投入资源类型)。
+# 例: items=[{key:"craft", direction:"positive"}] → whitelist=["craft"]
+func _derive_whitelist(option_def: Dictionary) -> Array:
+	var check := _option_check_dict(option_def)
+	var items: Array = check.get("items", [])
+	var out: Array = []
+	for item_variant in items:
+		var item: Dictionary = item_variant
+		var key := str(item.get("key", ""))
+		if not key.is_empty():
+			out.append(key)
+	return out
+
+
+# 安全取 option.check 字典: 字段不存在 / null 都统一返回空 Dict。
+func _option_check_dict(option_def: Dictionary) -> Dictionary:
+	var check_v: Variant = option_def.get("check", null)
+	if check_v == null or typeof(check_v) != TYPE_DICTIONARY:
+		return {}
+	return check_v
+
+
+# 派生鉴定难度 D: S8 期 CSV 无承载, 全部回退 FALLBACK_DIFFICULTY。
+# TODO S8.5: 与用户决议 CSV 字段后改读真实字段 (候选: options.csv 加 invest_difficulty,
+#            或从 check.hitThreshold / check.requiredHits 推, 或派生自 whitelist 长度)。
+func _derive_difficulty(option_def: Dictionary) -> int:
+	var _unused := option_def  # 占位避免 lint 警告 (S8.5 后会用上)
+	return FALLBACK_DIFFICULTY
+
+
+# 判定 option_id 是否为 DIRECT (无 check 字段) — outcome_for_option 路径选择用。
+func _is_direct_option(option_id: String) -> bool:
+	if _pending_choice_point_id.is_empty():
+		return true
+	var cp_def: Dictionary = _choice_points_by_id.get(_pending_choice_point_id, {})
+	for option_variant in cp_def.get("options", []):
+		var option: Dictionary = option_variant
+		if str(option.get("id", "")) == option_id:
+			return _option_check_dict(option).is_empty()
+	return true
+
+
+# 标记池快照: 对所有 token key 取 (count, capacity), 供 diff 计算 deltas。
+func _snapshot_token_counts() -> Dictionary:
+	var snap: Dictionary = {}
+	if _player == null:
+		return snap
+	for token_key in ResourceMarkerPoolScn.ALL_TOKEN_KEYS:
+		snap[token_key] = _player.get_resource(token_key, 0)
+	return snap
+
+
+# 计算两份 snapshot 的差异, 返回 [{token_key, amount}] (amount 正=gain 负=loss)。
+# 0 差异不入列, 避免账单冗余。
+func _diff_token_counts(before: Dictionary, after: Dictionary) -> Array:
+	var deltas: Array = []
+	for token_key in ResourceMarkerPoolScn.ALL_TOKEN_KEYS:
+		var delta := int(after.get(token_key, 0)) - int(before.get(token_key, 0))
+		if delta != 0:
+			deltas.append({"token_key": token_key, "amount": delta})
+	return deltas
+
+
+# 空账单兜底 (engine 调用失败时返回, 保证 card_table 不崩)
+func _empty_outcome(tier: String) -> Dictionary:
+	return {"tier": tier, "markers": [], "exp_deltas": [], "flags": []}

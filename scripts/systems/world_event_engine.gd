@@ -340,6 +340,47 @@ func confirm_pending_turn(selected_option_id: String = "") -> Dictionary:
 	return _resolve_pending_turn(selected_option_id)
 
 
+# 功能：取消 pending 回合（不结算、不推 turn、不记历史），让下次 preview_next_turn 重新选事件。
+# 说明：zhengdao-cards 卡牌前端"重抽"语义 — 玩家在结果前点新事件牌库时调用，
+#       释放 _pending_turn_context 使 preview 不再返回旧事件。
+#       回合 / 任务推进未发生（未走 _resolve_pending_turn），世界状态零副作用。
+func cancel_pending_turn() -> Dictionary:
+	if _pending_turn_context.is_empty():
+		return {"ok": true, "cancelled": false}
+	var cancelled_event_id := str(_pending_turn_context.get("event_id", ""))
+	_pending_turn_context.clear()
+	return {"ok": true, "cancelled": true, "event_id": cancelled_event_id}
+
+
+# 功能：用外部传入的 tier 强制覆盖鉴定结果，结算 pending 选项。
+# 说明：zhengdao-cards Line B S8 桥接接口 —— 前端 MarkerCheckResolver 算出 tier 后注入引擎，
+#       引擎跳过 vibe-test 骰池 _is_check_pass、跳过心性风险入口（preemptive_bet / desperate_gamble），
+#       直接按 tier 选择 onCriticalSuccessResolution / onFailResolution / onCriticalFailResolution / 基础 resolution。
+#       原 confirm_pending_turn 路径完全保留，供 vibe-test 外场景沿用。
+#       tier 取值: great_success / success / fail / great_fail（与 [[卡牌前端交互设计]] §3.2 stub 对齐）。
+func confirm_pending_turn_with_forced_tier(selected_option_id: String, tier: String) -> Dictionary:
+	if _is_world_ended():
+		return _build_world_ended_response()
+	if _pending_turn_context.is_empty():
+		return {"ok": false, "error": "no pending turn to confirm"}
+	var result_type := _tier_to_vibe_test_result_type(tier)
+	_pending_turn_context["forced_check_result"] = {
+		"pass": result_type == "success" or result_type == "critical_success",
+		"result_type": result_type
+	}
+	return _resolve_pending_turn(selected_option_id)
+
+
+# 功能：tier (zhengdao-cards 四档) → result_type (vibe-test 鉴定 result_type) 映射。
+# 说明：great_success ↔ critical_success / fail ↔ fail / great_fail ↔ critical_fail / 其他 ↔ success。
+static func _tier_to_vibe_test_result_type(tier: String) -> String:
+	match tier:
+		"great_success": return "critical_success"
+		"fail": return "fail"
+		"great_fail": return "critical_fail"
+		_: return "success"
+
+
 # 功能：确认地点选择，初始化新的叙事包。
 # 说明：由 UI 层在玩家选定地点后调用。location_id 必须是 _build_location_select_event 返回的合法选项。
 #       该操作不消耗回合、不推进任务、不记入历史。
@@ -2274,6 +2315,14 @@ func _apply_option_resolution(selected_option: Dictionary, event_def: Dictionary
 	# 1. 支付 cost
 	_apply_cost(cost)
 
+	# Line B S8.2 桥接: 检测 forced_check_result (zhengdao-cards 标记投入鉴定算法注入)。
+	# 有则跳过 vibe-test 骰池 + 心性风险入口 (preemptive_bet / desperate_gamble),
+	# 直接用 forced 结果选 resolution 分支并应用。原 vibe-test 路径完全保留 (else 分支)。
+	var forced_check := _dict_or_empty(_pending_turn_context.get("forced_check_result", {}))
+	if not forced_check.is_empty():
+		_apply_option_resolution_with_forced_check(selected_option, event_def, forced_check)
+		return
+
 	# 2. 读取心性 → 获取风险入口配置
 	var xinxing := _get_current_xinxing()
 	var risk_profile := RuleEngine.get_xinxing_risk_profile(xinxing)
@@ -2338,6 +2387,40 @@ func _apply_option_resolution(selected_option: Dictionary, event_def: Dictionary
 	var xinxing_after := _get_current_xinxing()
 	if xinxing_after != xinxing_before:
 		_last_xinxing_transition = {"old_value": xinxing_before, "new_value": xinxing_after}
+
+# 功能：forced_check_result 在场时的选项结算（Line B S8.2 桥接路径）。
+# 说明：cost 已在 _apply_option_resolution 主路径支付完，本函数从 result_type 选 resolution 直接应用。
+#       跳过 _is_check_pass / preemptive_bet / desperate_gamble (zhengdao-cards MVP 1 期心性路径延后 S5)。
+#       关系回响 + 稳健计数 + xinxing transition 与原路径保持一致，避免行为漂移。
+func _apply_option_resolution_with_forced_check(
+	selected_option: Dictionary, event_def: Dictionary, forced_check: Dictionary
+) -> void:
+	_last_check_result = forced_check.duplicate(true)
+	_last_affinity_changes = []
+	_last_xinxing_transition = {}
+	var xinxing_before := _get_current_xinxing()
+
+	var resolution := _dict_or_empty(selected_option.get("resolution", {}))
+	var check := _dict_or_empty(selected_option.get("check", {}))
+	resolution = _resolve_check_resolution(check, resolution, forced_check)
+	print("[鉴定结果·forced] result_type: %s | pass: %s" % [
+		str(forced_check.get("result_type", "")), str(forced_check.get("pass", true))
+	])
+
+	_apply_resolution(resolution, event_def)
+	_try_relationship_echo(forced_check)
+
+	_ensure_xinxing_tracker()
+	var tracker: Dictionary = world_state["xinxingTracker"]
+	tracker["steady_count"] = int(tracker.get("steady_count", 0)) + 1
+	world_state["xinxingTracker"] = tracker
+	_check_xinxing_transition()
+	var xinxing_after := _get_current_xinxing()
+	if xinxing_after != xinxing_before:
+		_last_xinxing_transition = {"old_value": xinxing_before, "new_value": xinxing_after}
+
+	# 清理 forced 标记，避免泄露到下一回合
+	_pending_turn_context.erase("forced_check_result")
 
 # 功能：执行选项检定。
 # 说明：委托 RuleEngine.resolve_check 统一判定，传入引擎自身的 rng 和阈值。

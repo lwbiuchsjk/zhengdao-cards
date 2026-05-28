@@ -123,7 +123,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 - [前端骨架_LineA_实施](Design/zhengdao-cards/进度/前端骨架_LineA_实施.md) — **Line A 前端骨架 + 架构验证 实施文档**(2026-05-25 启动 ~ 2026-05-26 收口):S1 牌桌底座+原语 + S2 锚点簇/因果链/手牌 + S3a 揭示循环(屏息→翻牌→显式档位→标记领取)+ S3b 鉴定聚焦(镜头驱动 zoom+居中+收起)+投入双入口(点击手牌为主/拖标记备)+ tier 由投入定. **Line A 全段 ✅,核心循环用 mock 跑通 → 新会话接 Line B**(提交 `6be2f63`→`ef8e086`)。
 
-- [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) — **Line B 引擎扩展 + CSV 契约 实施文档**(2026-05-27 落盘 + 推进):MVP 1 期**核心版**切片 = S1 数据契约层 → S2 资源标记系统 → S3 选项层调度 → **S8.0 标记投入鉴定算法**(独立支柱模块) → S8.2-S8.7 §3.2 汇合(待开). **S1/S2/S3/S8.0 ✅ 全段完成**(提交主项目 `d9bb63d`→`df5e0a0` + S8.0 待提交);单元 3/3 + 4/4 + 5/5 + 12/12 + 8/8 + 12/12 全过 / csv_validator 0 P1 0 P2 / 契约 8 锚点完整 / Godot --headless --quit 无报错. **S4-S7 增强切片延后**(字段先建, 行为后填). 详写 S1/S2/S3 + S8.0 (§3.6/3.7/3.8 算法独立支柱 + 12 项单元); S8 占位推进时增量。
+- [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) — **Line B ✅ 全段完成**(2026-05-27~28):S1 数据契约 + S2 资源标记 + S3 选项调度 + S8.0 鉴定算法 + S8.2-S8.7 §3.2 汇合.**核心循环用真数据 playtest 跑通**(loc_pharmacy 包内 turn 推进 + 末位池命中鉴定型 + 包结束 + 自省透明消化 + 下一包).engine 加 2 个 public 接口(`confirm_pending_turn_with_forced_tier` + `cancel_pending_turn`)+ `_apply_option_resolution` forced 短路(原 vibe-test 路径零影响).新建 `engine_data_source.gd` 适配器(~290 行, 3 处透明消化抹平 vibe-test/zhengdao 事件语义差)+ `mock_data_source.gd` fallback(USE_ENGINE=false 路径).card_table 4 个调用点接 `_data_source`.单元冒烟 5/5 + playtest ✅.**S8 暴露 3 个卡牌化前置 UX 议题 → [[卡牌前端交互设计]] §3.X 立项**(B④ 前置).**S4-S7 增强切片延后**(字段先建, 行为后填).
 
 ## 下一阶段工作顺序(MVP 1 期实施 — 可新会话接手)
 
@@ -131,31 +131,29 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 **Line A ✅ 全段完成**(2026-05-25~26, 主项目 `6be2f63`→`ef8e086`): S1 牌桌底座+原语 / S2 锚点簇+因果链+手牌 / S3a 揭示循环 / S3b 鉴定聚焦(镜头驱动)+投入双入口. 核心循环用 mock 跑通; 详见 [前端骨架_LineA_实施](Design/zhengdao-cards/进度/前端骨架_LineA_实施.md) §八。
 
-**Line B 进展状态**(2026-05-27):
+**Line B ✅ 全段完成**(2026-05-27~28):
 
-- **S1 数据契约层 ✅** (`d9bb63d`): CSV 字段 +12 (options/attribute_names/ability_progression) + 契约三件套同步 (翻译指南 +3 锚点 / csv_translator / csv_validator) + ConfigRuntime 加载链路占位. 单元 3/3 + 4/4 + 5/5 (P2 修复). codex 审查 P1 无.
-- **S2 资源标记系统 ✅** (`db68fce`): attribute_names +3 行 token + 新建 `resource_marker_pool.gd` (190 行 class_name ResourceMarkerPool) + world_event_engine `_apply_world_state_patch` 路由扩展 + `reflection_settle` 接入回流. ResourceMarkerPool 单元 12/12 + 引擎整合 8/8.
-- **S3 选项层调度 ✅** (`df5e0a0`): assembler 读 4 新字段 + `_build_option_set` 五步算法 (trigger 门控/分组/必出+加权抽/排序/state) + `_weighted_sample_options`. 单元 8/8. 向后兼容: 现有 mvp 每 cp ≤3 选项走全产出分支行为不变.
-- **S8.0 标记投入鉴定算法 ✅** (待提交): 独立支柱模块 `scripts/systems/marker_check_resolver.gd` (~140 行 class_name MarkerCheckResolver) + LineB §3.6/3.7/3.8 (设计依据 / 接口契约 / 冒烟测试). 算式 `r=(inv+1)/D` 线性 + 必然成功点 `inv=D-1` + 超额段 `p_gs=min(P_GS_MAX, STEP_PER_INV×excess)` + great_fail 恒 0 (§7.7 孤注链路产出). STEP_PER_INV=0.10 模块内固定 / DEFAULT_P_GS_MAX=0.50 可传入覆盖 / inv_max 随 P_GS_MAX 自动派生. 单元 12/12.
+- **S1 数据契约层 ✅** (`d9bb63d`): CSV 字段 +12 + 契约三件套同步 + ConfigRuntime 加载链路占位.
+- **S2 资源标记系统 ✅** (`db68fce`): `resource_marker_pool.gd` (~190 行) + 引擎接入回流.
+- **S3 选项层调度 ✅** (`df5e0a0`): `_build_option_set` 五步算法 + `_weighted_sample_options`. 向后兼容.
+- **S8.0 标记投入鉴定算法 ✅** (`ce2b20d`): `marker_check_resolver.gd` 独立支柱模块. 单元 12/12.
+- **S8.2-S8.7 §3.2 汇合 ✅** (2026-05-28, 待提交): `engine_data_source.gd` 适配器 + `mock_data_source.gd` fallback + card_table USE_ENGINE 接入 + engine forced_tier / cancel_pending_turn 接口 + 3 处透明消化 (location_select / presentation 屏 / outcome 屏含自省末屏). 单元冒烟 5/5 + playtest 核心循环 ✅ (loc_pharmacy 包内 turn=1→2→3 → 末位池命中 evt_s2_sk_he 鉴定型 → 包结束 → 自省透明消化). 详见 [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) §3.14-§3.16。
 
-**新会话默认接手: Line B S8.2-S8.7 §3.2 汇合** (任务清单见 LineB 文档 §S8 占位段):
+**新会话默认接手: 卡牌化前置 UX/资产议题 → B④ 普通事件资产**:
 
-- **S8.2 引擎对外桥接接口**: 暴露 mock_data 所需接口形状 (events_for_pile / options_for_event / outcome_for_option) 桥接到 world_event_engine + MarkerCheckResolver
-- **S8.3 mock_data.gd 改造**: 加 USE_ENGINE 开关 (true=引擎真数据 / false=旧 mock fallback); 保留双路并存供调试
-- **S8.4 前端账单对齐 §3.2 stub**: tier 由引擎 (MarkerCheckResolver.resolve) 计算, markers/kind=entity 走标记领取
-- **S8.5 测试数据补齐**: 给 world_event_mvp 至少 1 事件补 is_base/weight/trigger_condition/check_whitelist 字段
-- **S8.6 整合冒烟**: 手动 playtest 跑核心循环用真数据 + headless 不报错 + mock 模式可切回验证
-- **S8.7 文档收口**: LineB §3.14 (原 §3.11 顺延) 详写 + CLAUDE.md 活跃区 Line B 改为 ✅ 全段完成
+S8.2-S8.7 playtest 暴露 3 个卡牌化语义差议题, 已转入 [[卡牌前端交互设计]] §3.X 立项, 作为 **B④ 启动前置**(成组讨论, 三议题相互耦合):
+
+- **§3.X.1 事件文本 / 美术表现颗粒度**: 多屏 presentation/outcome 文字被压成"事件卡 1 屏 body + 结果卡 tier label", 需重定 §7.1 撰写规格 → 单屏卡牌模板.
+- **§3.X.2 凸显事件氛围的 UX**: 占位卡面 → 背景图 / 字体层级 / 不同事件类型视觉差 / 美术资产产出节奏.
+- **§3.X.3 事件衔接 UX**: 引擎透明消化 turn 推进 / location 切换 / 自省 → 玩家无感, 需衔接动画 / progress indicator / 静默语义确认.
+
+**之后**: 三议题讨论完 → **B④ 少量普通事件资产(§7.1)+ 数值标定**(需可跑循环 playtest).
 
 **契约 mismatch 决议**(2026-05-27):
 
-- Line A "投入标记 → vibe-test 骰子鉴定" 不对齐 → **新设计独立鉴定算法** (S8.0 已落地 MarkerCheckResolver)
+- Line A "投入标记 → vibe-test 骰子鉴定" 不对齐 → **新设计独立鉴定算法** (S8.0 MarkerCheckResolver + S8.2 engine forced_tier 接口绕过 vibe-test 骰池路径). 接口对齐: card_table → MockDataSource/EngineDataSource (同形 RefCounted) → engine + MarkerCheckResolver + ResourceMarkerPool.
 - 算法核心: 投入 < D-1 始终有失败 / 投入 = D-1 必然成功 / 投入 > D-1 提升大成功 / 投入达上限封顶大成功率
-- great_fail 不由常规鉴定产出 → 由 §7.7 孤注一掷链路产出 (fail → 选孤注 → 再败 → great_fail)
-
-**之后**(S8 全段完成后): 各卡视觉 / 投入鉴定细节边原型边定 → **B④ 少量普通事件资产(§7.1)+ 数值标定**(需可跑循环 playtest)。
-
-> **接口对齐状态**: Line A 的 mock 已朝 §3.2 stub 对齐(`scripts/ui/mock_data.gd` + `card_table.gd::_expand_result`); Line B 产出朝同一接口靠, S8.2-S8.4 接通时只做校准、避免大返工。**鉴定算式独立模块** (`MarkerCheckResolver`) → playtest 调参只改本模块, 外部调用方零改动。
+- great_fail 不由常规鉴定产出 → 由 §7.7 孤注一掷链路产出 (fail → 选孤注 → 再败 → great_fail; MVP 1 期延后 S5)
 
 ## 预启动工作项(follow-up,可新会话接手)
 

@@ -9,10 +9,16 @@ extends Node2D
 ## 验证: B③#1 拖拽优先级(卡隙拖=平移, 标记上拖=拖标记, 互不冲突)。
 ## S2 起以锚点簇 + 因果链 + 手牌区替代 _build_s1_sample。
 
-# 显式 preload 卡 / 标记 / mock 脚本(不依赖全局 class_name 缓存 → 全新克隆 / headless 运行均稳健)
+# 显式 preload 卡 / 标记 / 数据源脚本(不依赖全局 class_name 缓存 → 全新克隆 / headless 运行均稳健)
 const CardScn := preload("res://scripts/ui/card.gd")
 const MarkerScn := preload("res://scripts/ui/marker.gd")
 const MockDataScn := preload("res://scripts/ui/mock_data.gd")
+const EngineDataSourceScn := preload("res://scripts/ui/engine_data_source.gd")
+const MockDataSourceScn := preload("res://scripts/ui/mock_data_source.gd")
+
+# Line B S8.3: USE_ENGINE 开关 — true = 走真引擎 (EngineDataSource), false = 走 Line A 原 mock (MockDataSource)。
+# 接口形状对齐, card_table 调用点零分支; 调试 / 回归测试时改为 false 快速 fallback。
+const USE_ENGINE := true
 
 # 牌桌尺寸(略大于 1920x1080 视口, 留平移空间)
 const TABLE_SIZE := Vector2(2560, 1600)
@@ -52,16 +58,29 @@ var _press_screen: Vector2 = Vector2.ZERO  # 左键按下屏幕位置(判定点�
 var _press_moved: bool = false          # 本次按下是否移动过(拖动=平移, 点击=取消聚焦)
 var _press_on_pickable: bool = false    # 本次按下是否落在卡/标记上(picking 阶段通知 → 不取消聚焦)
 
+# Line B S8.3: 数据源 (与 mock 同形接口的引擎适配器 / mock 包装器, 由 USE_ENGINE 选择)
+var _data_source: RefCounted = null
+# 当前 pending 事件的 selected option_id (聚焦时记下, 确定时传给 outcome_for_option)
+var _focus_option_id: String = ""
+
 func _ready() -> void:
 	add_to_group("card_table")  # 供卡/标记 picking 时回查通知本表(聚焦取消判定)
 	# 启用 2D 物理拾取 → 卡牌 / 标记 的 Area2D hover/click 生效
 	get_viewport().physics_object_picking = true
+	_init_data_source()
 	_build_table()
 	_build_camera()
 	_build_layers()
 	_build_system_buttons()
 	_build_anchor_cluster()
 	_build_hand_zone()
+
+## Line B S8.3: 按 USE_ENGINE 实例化数据源 (EngineDataSource 或 MockDataSource, 同形接口)。
+func _init_data_source() -> void:
+	if USE_ENGINE:
+		_data_source = EngineDataSourceScn.new(0)
+	else:
+		_data_source = MockDataSourceScn.new()
 
 ## 牌桌底纹(世界空间, 随镜头平移); mouse_filter=IGNORE → 空白拖拽落到 _unhandled_input
 func _build_table() -> void:
@@ -180,11 +199,17 @@ func _build_hand_zone() -> void:
 
 # ---------- 因果链动态槽位(§2.3, 验 B③#5) ----------
 
-## 抽牌起新链: 清空旧链 → 生成事件卡(牌背, 点击翻开 + 展开选项)
+## 抽牌起新链: 清空旧链 → 调 _data_source 拿事件 → 生成事件卡(牌背, 点击翻开 + 展开选项)
 func _start_chain() -> void:
 	_clear_chain()
 	_chain_origin = Vector2(1010, 620)  # 事件在锚点簇右侧; 选项/结果向右依次展开(始终左→右)
-	var ev := _make_card(CardScn.CardType.EVENT, "山道遇雨", "雨势渐大，前方有破庙可避。你会如何应对？")
+	var event_info: Dictionary = _data_source.events_for_pile()
+	if not event_info.get("ok", false):
+		push_error("[card_table] events_for_pile failed: %s" % str(event_info.get("error", "")))
+		return
+	var title := str(event_info.get("title", ""))
+	var body := str(event_info.get("body", ""))
+	var ev := _make_card(CardScn.CardType.EVENT, title, body)
 	ev.start_face_up = false
 	ev.position = _chain_origin
 	_upper_zone.add_child(ev)
@@ -199,33 +224,46 @@ func _on_event_clicked(ev: CardScn) -> void:
 	ev.flip_to(true)
 	_expand_options()
 
-## 展开选项(≤3, 水平排在事件右侧; 纯代码偏移 → 均匀无重叠)
+## 展开选项: 调 _data_source 拿选项数据 (≤3, 水平排在事件右侧; 纯代码偏移 → 均匀无重叠)
 func _expand_options() -> void:
-	var titles: Array[String] = ["冒雨赶路", "破庙暂避", "寻人引路"]
-	var bodies: Array[String] = ["直接型 · 必有数值成长", "鉴定型 · 体魄 / 心性", "鉴定型 · 人际"]
-	var types: Array[int] = [MockDataScn.OptType.DIRECT, MockDataScn.OptType.CHECK, MockDataScn.OptType.CHECK]
-	var whitelists: Array[Array] = [[], ["physique", "xinxing"], ["insight", "social"]]  # 鉴定型白名单(§2.5)
-	var thresholds: Array[int] = [0, 3, 2]  # 鉴定难度(需投入标记数); 直接型 0
-	var n: int = titles.size()
+	var options: Array = _data_source.options_for_event()
+	var n: int = options.size()
 	_option_cards.clear()
 	for i in n:
-		var opt := _make_card(CardScn.CardType.OPTION, titles[i], bodies[i])
+		var opt_data: Dictionary = options[i]
+		var option_id := str(opt_data.get("id", ""))
+		var opt_text := str(opt_data.get("text", ""))
+		var opt_type: int = int(opt_data.get("opt_type", 0))
+		var whitelist: Array = opt_data.get("whitelist", [])
+		var threshold: int = int(opt_data.get("threshold", 0))
+		var body := _option_body_hint(opt_type, whitelist)
+		var opt := _make_card(CardScn.CardType.OPTION, opt_text, body)
 		opt.position = Vector2(_chain_origin.x + (i + 1) * SLOT_DX, _chain_origin.y)  # 紧邻事件向右依次排
 		_upper_zone.add_child(opt)
 		_chain_nodes.append(opt)
 		_option_cards.append(opt)
-		var t: int = types[i]  # 按值捕获该选项类型
-		var wl: Array = whitelists[i]
-		var th: int = thresholds[i]
-		opt.clicked.connect(func(c: CardScn) -> void: _on_option_chosen(c, t, wl, th))
+		# 闭包按值捕获 option_id / opt_type / whitelist / threshold (后续聚焦+确定都用)
+		var oid := option_id
+		var t := opt_type
+		var wl: Array = whitelist
+		var th := threshold
+		opt.clicked.connect(func(c: CardScn) -> void: _on_option_chosen(c, oid, t, wl, th))
+
+## 选项卡正文文案 (鉴定型显示白名单, 直接型显示固定提示)
+func _option_body_hint(opt_type: int, whitelist: Array) -> String:
+	if opt_type == EngineDataSourceScn.OptType.DIRECT:
+		return "直接型 · 必有数值成长"
+	if whitelist.is_empty():
+		return "鉴定型"
+	return "鉴定型 · " + " / ".join(whitelist)
 
 ## 选定一个选项(直接型 / 鉴定型都进入聚焦); 已聚焦时点另一选项 = 切换
-func _on_option_chosen(chosen: CardScn, opt_type: int, whitelist: Array, threshold: int) -> void:
+func _on_option_chosen(chosen: CardScn, option_id: String, opt_type: int, whitelist: Array, threshold: int) -> void:
 	if _result_shown:
 		return
 	if _focus_active and chosen == _focused_option:
 		return
-	_enter_focus(chosen, opt_type, whitelist, threshold)
+	_enter_focus(chosen, option_id, opt_type, whitelist, threshold)
 
 ## 提交选项: 未选中的淡出消失 + 选中项归到事件右侧固定槽(此后不可改选)
 func _commit_option(chosen: CardScn) -> void:
@@ -241,7 +279,7 @@ func _commit_option(chosen: CardScn) -> void:
 
 ## 进入/切换聚焦: 镜头 zoom + 居中该选项 + 选中高亮 + 手牌前推(白名单)/收起(非白名单) + 难度提示 + 确定。
 ## 首次进入记录镜头(切换不覆盖); 点桌面空白取消(见 _unhandled_input)。
-func _enter_focus(option: CardScn, opt_type: int, whitelist: Array, threshold: int) -> void:
+func _enter_focus(option: CardScn, option_id: String, opt_type: int, whitelist: Array, threshold: int) -> void:
 	if not _pre_focus_saved:
 		_pre_focus_cam_pos = _camera.position
 		_pre_focus_cam_zoom = _camera.zoom
@@ -255,6 +293,7 @@ func _enter_focus(option: CardScn, opt_type: int, whitelist: Array, threshold: i
 			_confirm_btn = null
 	_focus_active = true
 	_focused_option = option
+	_focus_option_id = option_id
 	_focus_opt_type = opt_type
 	_focus_whitelist = whitelist
 	_focus_threshold = threshold
@@ -340,17 +379,17 @@ func _cancel_focus() -> void:
 	if _focus_active:
 		_restore_focus()
 
-## 确定: 算 tier(鉴定型由投入定, 直接型固定 success) → 消耗投入标记 → 还原 → 提交 → 出结果
+## 确定: 算 tier(_data_source.tier_from_invest 决策, 鉴定型由投入定, 直接型固定 success) →
+##       消耗投入标记 → 还原 → 提交 → 出结果
 func _confirm_focus() -> void:
 	if not _focus_active:
 		return
 	var option: CardScn = _focused_option
+	var option_id: String = _focus_option_id
 	var opt_type: int = _focus_opt_type
 	var invested: int = _invested_markers.size()
 	var threshold: int = _focus_threshold
-	var tier: String = "success"
-	if opt_type == MockDataScn.OptType.CHECK:
-		tier = _tier_from_invest(invested, threshold)
+	var tier := str(_data_source.tier_from_invest(opt_type, invested, threshold))
 	# 消耗(封缄): 投入标记释放, 不再飞回(_restore_focus 中的 flyback 会跑在空列表上 → no-op)
 	for m in _invested_markers:
 		if is_instance_valid(m):
@@ -359,19 +398,7 @@ func _confirm_focus() -> void:
 	_restore_focus()
 	if is_instance_valid(option):
 		_commit_option(option)
-		_expand_result(opt_type, tier)
-
-## 由投入数 vs 阈值算 tier(mock 公式; Line B 完成后由引擎规则替代)
-func _tier_from_invest(invested: int, threshold: int) -> String:
-	if threshold <= 0:
-		return "success"
-	if invested >= int(ceil(threshold * 1.5)):
-		return "great_success"
-	if invested >= threshold:
-		return "success"
-	if invested * 2 >= threshold:
-		return "fail"
-	return "great_fail"
+		_expand_result(option_id, opt_type, tier)
 
 ## 还原聚焦: 投入标记飞回手牌 → 镜头回原位 → 手牌全部归位 + 取消选中 + 清 UI + 复位状态
 func _restore_focus() -> void:
@@ -513,19 +540,14 @@ func _fade_and_free(node: Node2D) -> void:
 	tw.tween_callback(node.queue_free)
 
 ## 选定选项 → 展开结果卡(牌背, 点击揭示)。
-## tier: 调用方传(_confirm_focus 鉴定型由投入算, 直接型固定 success); forced_tier 空时回退随机(防御)。
-func _expand_result(opt_type: int, forced_tier: String = "") -> void:
+## option_id / tier: 调用方传(_confirm_focus 算好); 经 _data_source 取 §3.2 stub 账单。
+func _expand_result(option_id: String, opt_type: int, tier: String) -> void:
 	if _result_shown:
 		return
 	_result_shown = true
-	var tier: String = forced_tier
-	if tier.is_empty():
-		tier = "success"
-		if opt_type == MockDataScn.OptType.CHECK:
-			var roll: Array[String] = ["great_success", "success", "fail", "great_fail"]
-			tier = roll[randi() % roll.size()]
-	var outcome: Dictionary = MockDataScn.outcome_for(tier)
-	var res := _make_card(CardScn.CardType.RESULT, MockDataScn.tier_label(tier), "点击牌背揭示。")
+	var _unused_opt_type := opt_type  # 占位: tier 已由 _confirm_focus 决定, opt_type 不再分支
+	var outcome: Dictionary = _data_source.outcome_for_option(option_id, tier)
+	var res := _make_card(CardScn.CardType.RESULT, _data_source.tier_label(tier), "点击牌背揭示。")
 	res.start_face_up = false
 	res.position = Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y)  # 结果在选中选项右侧
 	_upper_zone.add_child(res)
@@ -547,6 +569,7 @@ func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
 	_spawn_claimable_markers(card, outcome)
 
 ## 在结果卡旁生成可领取标记(实体 + 经验成长); 放世界(UpperZone), 与结果卡相对位置固定、随镜头一起动
+## Line B S8.4: dir 字段处理 —— gain 走可领取通道; loss 暂走 print 提示(已扣除展示由后续 playtest 决议视觉)。
 func _spawn_claimable_markers(result_card: CardScn, outcome: Dictionary) -> void:
 	var base: Vector2 = result_card.position  # 世界坐标(牌桌上), 锚定结果卡
 	var idx: int = 0
@@ -554,8 +577,17 @@ func _spawn_claimable_markers(result_card: CardScn, outcome: Dictionary) -> void
 	for entry in markers:
 		var d: Dictionary = entry
 		var count: int = int(d.get("count", 1))
+		var dir := str(d.get("dir", "gain"))
+		var rt := String(d["type"])
+		if dir == "loss":
+			# Line B S8.4 占位: loss 标记不可领取(引擎已在 world_state 扣除),
+			# 仅打印提示供调试; 视觉表现 (从资源卡飞出 / 红字提示等) 待 playtest 决议。
+			print("[card_table] loss marker (already deducted): type=%s count=%d kind=%s" % [
+				rt, count, String(d["kind"])
+			])
+			continue
 		for k in count:
-			_make_claimable(String(d["type"]), String(d["kind"]), base, idx)
+			_make_claimable(rt, String(d["kind"]), base, idx)
 			idx += 1
 	var exps: Array = outcome.get("exp_deltas", [])
 	for entry in exps:
