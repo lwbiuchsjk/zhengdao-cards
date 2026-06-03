@@ -40,6 +40,11 @@ signal clicked(card: Card)
 @export var start_face_up: bool = true
 @export var back_label: String = ""  # 牌背中心标注(空则用类型名); 区分多种卡背(事件牌库/事件/结果)
 
+# E0 卡牌实体地基: 持有的数据身份(CardData 实例)。每张视觉卡 spawn 时由 card_table 注入,
+# 承载稳定 card_uid / logical_id / Zone 归属 / modifiers。MVP 阶段为引用持有 ——
+# 表现逻辑(翻牌 / hover / click)不读它; 身份与检索查询统一走 CardRegistry + CardZoneStore。
+var model: CardData = null
+
 var _state: State = State.FACE_UP
 var _face_up: bool = true
 var _hovered: bool = false

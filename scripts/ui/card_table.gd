@@ -15,6 +15,19 @@ const MarkerScn := preload("res://scripts/ui/marker.gd")
 const MockDataScn := preload("res://scripts/ui/mock_data.gd")
 const EngineDataSourceScn := preload("res://scripts/ui/engine_data_source.gd")
 const MockDataSourceScn := preload("res://scripts/ui/mock_data_source.gd")
+# E0 卡牌实体地基: 权威态 + 前端镜像(弱类型 preload 持有, 不依赖 class_name 缓存)
+const CardZoneStoreScn := preload("res://scripts/systems/card_zone_store.gd")
+const CardRegistryScn := preload("res://scripts/ui/card_registry.gd")
+
+# E0 MVP Zone 清单(逻辑区域, 与视觉父节点解耦): 锚点簇 / 资源手牌 / 因果链 / 弃牌堆
+const ZONE_ANCHOR := "anchor"
+const ZONE_HAND := "hand_resource"
+const ZONE_CHAIN := "causal_chain"
+const ZONE_DISCARD := "discard"
+# E0 结构性卡的固定 logical_id(无引擎 def, 用约定常量)
+const LID_LOCATION := "loc_anchor"
+const LID_DECK := "event_deck"
+const LID_LEAVE := "leave"
 
 # Line B S8.3: USE_ENGINE 开关 — true = 走真引擎 (EngineDataSource), false = 走 Line A 原 mock (MockDataSource)。
 # 接口形状对齐, card_table 调用点零分支; 调试 / 回归测试时改为 false 快速 fallback。
@@ -60,6 +73,9 @@ var _press_on_pickable: bool = false    # 本次按下是否落在卡/标记上(
 
 # Line B S8.3: 数据源 (与 mock 同形接口的引擎适配器 / mock 包装器, 由 USE_ENGINE 选择)
 var _data_source: RefCounted = null
+# E0: 卡实例 + Zone 权威态(前端暂持; E1 移交 world_state) + 前端镜像注册表(弱类型持有)
+var _zone_store: RefCounted = null
+var _registry: RefCounted = null
 # 当前 pending 事件的 selected option_id (聚焦时记下, 确定时传给 outcome_for_option)
 var _focus_option_id: String = ""
 
@@ -68,6 +84,7 @@ func _ready() -> void:
 	# 启用 2D 物理拾取 → 卡牌 / 标记 的 Area2D hover/click 生效
 	get_viewport().physics_object_picking = true
 	_init_data_source()
+	_init_card_system()
 	_build_table()
 	_build_camera()
 	_build_layers()
@@ -81,6 +98,45 @@ func _init_data_source() -> void:
 		_data_source = EngineDataSourceScn.new(0)
 	else:
 		_data_source = MockDataSourceScn.new()
+
+## E0 卡牌实体地基: 初始化前端暂持的权威态(store)+ 镜像(registry)+ 登记 MVP Zone。
+## E1 引擎接入后 store 移交 world_state, 此处改为取引擎持有的 store(registry 接口不变)。
+func _init_card_system() -> void:
+	_zone_store = CardZoneStoreScn.new()
+	_registry = CardRegistryScn.new()
+	for z: String in [ZONE_ANCHOR, ZONE_HAND, ZONE_CHAIN, ZONE_DISCARD]:
+		_zone_store.register_zone(z)
+
+## E0 统一 spawn: store 分配 uid + Zone 归属 → 建 Card 持 model → add_child(触发 _ready, 故
+## face_up / back 须在此前设)→ register 入镜像。position 由调用方在返回后设(不受 _ready 影响)。
+func _spawn_card(logical_id: String, kind: int, zone_id: String, parent: Node,
+		title: String = "", body: String = "", face_up: bool = true, back: String = "") -> CardScn:
+	var data: CardData = _zone_store.create_card(logical_id, kind, {}, zone_id)
+	var c := CardScn.new()
+	c.model = data
+	c.card_type = kind
+	c.title_text = title
+	c.body_text = body
+	c.start_face_up = face_up
+	c.back_label = back
+	parent.add_child(c)
+	_registry.register(c)
+	return c
+
+## E0 数据层注销: Card 转入目标 Zone(数据留档)+ 注销前端镜像。不负责视觉回收(非卡 no-op)。
+func _detach_card_data(node: Node, to_zone: String = ZONE_DISCARD) -> void:
+	if node == null or not (node is CardScn):
+		return
+	var model: CardData = node.get("model")
+	if model != null and not model.card_uid.is_empty():
+		_zone_store.move_card(model.card_uid, to_zone)
+		_registry.unregister(node)
+
+## E0 统一 despawn: 数据注销 + 立即视觉回收。
+func _despawn_card(node: Node, to_zone: String = ZONE_DISCARD) -> void:
+	_detach_card_data(node, to_zone)
+	if is_instance_valid(node):
+		node.queue_free()
 
 ## 牌桌底纹(世界空间, 随镜头平移); mouse_filter=IGNORE → 空白拖拽落到 _unhandled_input
 func _build_table() -> void:
@@ -147,28 +203,18 @@ func _build_system_buttons() -> void:
 	quit_btn.pressed.connect(func() -> void: get_tree().quit())
 	hbox.add_child(quit_btn)
 
-## 创建一张卡(仅配置, 不入树; 调用方设 position/start_face_up 后 add_child)
-func _make_card(type: int, title: String, body: String) -> CardScn:
-	var c := CardScn.new()
-	c.card_type = type
-	c.title_text = title
-	c.body_text = body
-	return c
-
 ## 地点锚点簇(§2.3, 持久, 上区左端): 地点卡 + 事件牌库 + 我要走
 func _build_anchor_cluster() -> void:
-	var loc := _make_card(CardScn.CardType.LOCATION, "青石镇", "你暂居此处，江湖讯息往来。")
+	var loc := _spawn_card(LID_LOCATION, CardScn.CardType.LOCATION, ZONE_ANCHOR, _upper_zone,
+		"青石镇", "你暂居此处，江湖讯息往来。", true)
 	loc.position = Vector2(440, 520)
-	_upper_zone.add_child(loc)
-	var deck := _make_card(CardScn.CardType.DECK, "事件牌库", "")
-	deck.start_face_up = false  # 牌背堆
-	deck.back_label = "事件牌库"  # 背面标注, 与抽出的"事件"牌背区分
+	var deck := _spawn_card(LID_DECK, CardScn.CardType.DECK, ZONE_ANCHOR, _upper_zone,
+		"事件牌库", "", false, "事件牌库")  # 牌背堆; back_label 与抽出的"事件"牌背区分
 	deck.position = Vector2(700, 520)
-	_upper_zone.add_child(deck)
 	deck.clicked.connect(func(_c: CardScn) -> void: _start_chain())  # 点击抽牌起链
-	var leave := _make_card(CardScn.CardType.LEAVE, "我要走", "另择去处。")
+	var leave := _spawn_card(LID_LEAVE, CardScn.CardType.LEAVE, ZONE_ANCHOR, _upper_zone,
+		"我要走", "另择去处。", true)
 	leave.position = Vector2(440, 840)
-	_upper_zone.add_child(leave)
 
 ## 下区手牌资源(§2.4): 资源卡 + 标记, 常驻 CanvasLayer(不随镜头, 决策①)
 func _build_hand_zone() -> void:
@@ -181,10 +227,11 @@ func _build_hand_zone() -> void:
 	var start_x := 960.0 - (n - 1) * spacing * 0.5
 	var y := 920.0
 	for i in n:
-		var card := _make_card(CardScn.CardType.RESOURCE, titles[i], bodies[i])
+		# E0: 资源卡 logical_id = res_type; 属"资源手牌"Zone; 视觉常驻下区 CanvasLayer
+		var card := _spawn_card(res_types[i], CardScn.CardType.RESOURCE, ZONE_HAND, _lower_layer,
+			titles[i], bodies[i], true)
 		card.position = Vector2(start_x + i * spacing, y)
 		card.set_meta("res_type", res_types[i])
-		_lower_layer.add_child(card)
 		_hand_cards[res_types[i]] = card  # 领取标记飞向目标
 		_hand_home[res_types[i]] = card.position  # 聚焦后归位锚点
 		card.clicked.connect(_on_hand_card_clicked)  # 聚焦+白名单时点击 → 投入一个该卡标记
@@ -209,10 +256,10 @@ func _start_chain() -> void:
 		return
 	var title := str(event_info.get("title", ""))
 	var body := str(event_info.get("body", ""))
-	var ev := _make_card(CardScn.CardType.EVENT, title, body)
-	ev.start_face_up = false
+	var event_id := str(event_info.get("event_id", ""))  # E0: 事件 logical_id 来自适配器
+	var ev := _spawn_card(event_id, CardScn.CardType.EVENT, ZONE_CHAIN, _upper_zone,
+		title, body, false)
 	ev.position = _chain_origin
-	_upper_zone.add_child(ev)
 	_chain_nodes.append(ev)
 	ev.clicked.connect(func(c: CardScn) -> void: _on_event_clicked(c))
 
@@ -237,9 +284,10 @@ func _expand_options() -> void:
 		var whitelist: Array = opt_data.get("whitelist", [])
 		var threshold: int = int(opt_data.get("threshold", 0))
 		var body := _option_body_hint(opt_type, whitelist)
-		var opt := _make_card(CardScn.CardType.OPTION, opt_text, body)
+		# E0: 选项 logical_id = option_id; opt_type/whitelist/threshold 属"本次结算上下文"
+		# (非卡静态身份), 仍按值闭包捕获(见 §三决策① 最小迁移)
+		var opt := _spawn_card(option_id, CardScn.CardType.OPTION, ZONE_CHAIN, _upper_zone, opt_text, body, true)
 		opt.position = Vector2(_chain_origin.x + (i + 1) * SLOT_DX, _chain_origin.y)  # 紧邻事件向右依次排
-		_upper_zone.add_child(opt)
 		_chain_nodes.append(opt)
 		_option_cards.append(opt)
 		# 闭包按值捕获 option_id / opt_type / whitelist / threshold (后续聚焦+确定都用)
@@ -535,6 +583,7 @@ func _relayout_hand_markers(card: Node2D) -> void:
 ## 淡出并释放一张卡(从链清单移除)
 func _fade_and_free(node: Node2D) -> void:
 	_chain_nodes.erase(node)
+	_detach_card_data(node)  # E0: Card → 转 discard + 注销镜像(非卡 no-op), 再视觉淡出回收
 	var tw := node.create_tween()
 	tw.tween_property(node, "modulate:a", 0.0, 0.15)
 	tw.tween_callback(node.queue_free)
@@ -547,10 +596,10 @@ func _expand_result(option_id: String, opt_type: int, tier: String) -> void:
 	_result_shown = true
 	var _unused_opt_type := opt_type  # 占位: tier 已由 _confirm_focus 决定, opt_type 不再分支
 	var outcome: Dictionary = _data_source.outcome_for_option(option_id, tier)
-	var res := _make_card(CardScn.CardType.RESULT, _data_source.tier_label(tier), "点击牌背揭示。")
-	res.start_face_up = false
+	# E0: 结果卡 logical_id 由 option_id 合成(同一选项的结果可寻址)
+	var res := _spawn_card("result:" + option_id, CardScn.CardType.RESULT, ZONE_CHAIN, _upper_zone,
+		str(_data_source.tier_label(tier)), "点击牌背揭示。", false)
 	res.position = Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y)  # 结果在选中选项右侧
-	_upper_zone.add_child(res)
 	_chain_nodes.append(res)
 	res.clicked.connect(func(c: CardScn) -> void: _reveal_result(c, outcome))
 
@@ -626,7 +675,11 @@ func _clear_chain() -> void:
 	if _focus_active:
 		_restore_focus()  # 聚焦中抽新牌: 先还原镜头 + 手牌 + 清 UI
 	for node in _chain_nodes:
-		if is_instance_valid(node):
+		if not is_instance_valid(node):
+			continue
+		if node is CardScn:      # Card → despawn(转 discard + 注销镜像)
+			_despawn_card(node)
+		else:                    # Marker 等非卡 → 裸回收
 			node.queue_free()
 	_chain_nodes.clear()
 	_option_cards.clear()
