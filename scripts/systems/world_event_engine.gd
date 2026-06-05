@@ -3,6 +3,40 @@ class_name WorldEventEngine
 
 # 功能：世界与事件引擎（MVP）。
 # 说明：单一主循环推进，forcedNextEventId 优先级最高，链式通过 chainContext 塑形分布。
+#
+# ============================================================================
+# 区段地图（导航索引，2026-06-04 加）—— 文件 4400+ 行，按职责分段。
+# 行号为近似（~），随改动漂移，失准时以函数名为准。拆解评估见 [[完整事件流程_实施]]。
+# ----------------------------------------------------------------------------
+#  §1  加载 / 初始化            ~71   _init · load_from_files/csv/json/data
+#  §2  主循环 · 公共入口        ~231  preview_next_turn · confirm/cancel_pending_turn ·
+#                                     confirm_pending_turn_with_forced_tier · confirm_location_select ·
+#                                     confirm_reflection_location_select · run_turn · _resolve_pending_turn
+#  §3  事件调度 · 选择          ~743  _select_next_event(forced→末位池→普通候选 三段)· _try_resolve_forced
+#  §4  Pending 上下文/展示/payload ~869 _create_pending_turn_context · _get_event_presentation* ·
+#                                     _build_presentation_state · _build_pending_turn_response · _build_result_payload
+#  §5  Run state / 世界终局      ~1192 _ensure_run_state · _finalize_world · _is_world_ended · 背景美术
+#  §6  映射重建(事件/CP/任务索引) ~1306 _rebuild_* · 任务评分带排序
+#  §7  候选 / 末位池 / 权重 / 资格 ~1457 _build_candidates · _is_at_pack_final_turn · _build_final_pool_candidates ·
+#                                     _is_final_pool_exhausted · _is_event_eligible · _compute_weight · _compute_task_bias
+#  §8  条件求值 / 路径 / 比较     ~1776 _evaluate_condition · _resolve_path_value · _parse_literal · _compare_values
+#  §9  抽样 / 兜底 / effects / 续链 ~1855 _weighted_pick · _fallback_event_id · _apply_event_effects ·
+#                                     _apply_continuation_policy · _ensure_or_patch_chain_context · _record_history
+#  §10 选项层(构建/采样/可见/成本/鉴定/结算) ~2044 _build_option_set · _weighted_sample_options · _option_* ·
+#                                     _apply_option_resolution* · _is_check_pass · 心性赌注/自省 phase · outcome 文本
+#  §11 关系(affinity)系统        ~2921 get_affinity_snapshot · _apply_affinity_deltas · _try_relationship_echo
+#  §12 resolution / focus patch  ~3073 _apply_resolution · _apply_focus_patch
+#  §13 任务(task)系统            ~3123 自动接取 · 接/进/弃/完成 · tick · 评分 grade · 完成条件求值
+#  §14 world patch / 心性(xinxing) / 工具 ~3725 _apply_world_state_patch · xinxing tracker · _dict_or_empty 等
+#  §15 叙事包(pack)系统          ~3892 _init_pack_config · _advance_pack_turn · _clear/_start_new_pack ·
+#                                     _is_pack_* · _build_location_select_event
+#  §16 自省(reflection)公共接口   ~4137 get_reflection_* · reflection_toggle/adjust/settle/start/act/confirm
+#  §17 创世(creation)接口 + 杂项  ~4361 start/creation_* · evaluate_condition · _load_creation_config
+# ----------------------------------------------------------------------------
+#  E1 引擎包模型 改动主要落点：§2(preview 新增 hand_window phase + 新接口 confirm_hand_pick)·
+#  §3(_select_next_event：skeleton 自然触发)· §7(_is_at_pack_final_turn 终止判定)·
+#  §9(_weighted_pick 复用做预抽 K)· §15(_start_new_pack 尾部预抽填 handQueue + _init_pack_config 加 handSpread)
+# ============================================================================
 const POLICY_RETURN := "ReturnToScheduler"
 const POLICY_CHAIN := "ChainContinue"
 const POLICY_CHAIN_FORCED := "ChainContinueWithForcedNext"
@@ -16,6 +50,9 @@ const ReflectionStateMachine := preload("res://scripts/systems/reflection_state_
 const CreationStateMachine := preload("res://scripts/systems/creation_state_machine.gd")
 # Line B S2: 资源标记池 (单值→卡+标记数; 满容量丢弃多余; 详见 [[前端骨架_LineB_实施]] §3.5-§3.12)
 const ResourceMarkerPool := preload("res://scripts/systems/resource_marker_pool.gd")
+# E1 uid 贯穿: 卡牌实例 + Zone 权威态（引擎持有，套 _affinity_map「成员权威 + world_state 镜像」惯例）。
+const CardZoneStoreClass := preload("res://scripts/systems/card_zone_store.gd")
+const CardDataClass := preload("res://scripts/models/card_data.gd")
 
 var world_state: Dictionary = {}
 var events: Array = []
@@ -45,6 +82,9 @@ var _last_affinity_changes: Array = []
 var _cycle_affinity_changes: Array = []
 # 叙事包系统配置（默认回合容量），从 world_seed packConfig 加载。
 var _pack_config: Dictionary = {}
+# E1 uid 贯穿: 卡牌实例 + Zone 权威态运行时权威（handQueue 存 uid，实例表 uid→CardData 在此）。
+# world_state.cardStore 为其序列化镜像（当前无存档出口，写回留将来接入）。
+var _card_store: CardZoneStore = null
 # 自省系统配置（操作限额、调整刻度、推荐数量），从 world_seed reflectionConfig 加载。
 var _reflection_config: Dictionary = {}
 # demo 期临时收紧的开关（心性 UI 隐藏 / 心性接入路径禁用等），从 world_seed demoModeConfig 加载。
@@ -223,6 +263,7 @@ func load_from_data(data: Dictionary, location_graph: Variant = null, role_state
 	_init_demo_mode_config()
 	# 确保 packContext 存在（首次加载时初始化为空包状态）。
 	_ensure_pack_context()
+	_ensure_card_store()
 	return {"ok": true}
 
 # 功能：预览下一回合事件，但不立即结算。
@@ -316,6 +357,16 @@ func preview_next_turn() -> Dictionary:
 				"awaiting_input": true
 			}
 
+	# E1 盲选窗口：包未结束 + 无 forced + handQueue 非空 + 未到末位回合 → 摊 K 张卡背供盲选。
+	#   forced 非空（含 confirm_hand_pick 注入后）让位 forced 出真事件；末位回合让位 skeleton；
+	#   包已结束由上方 _is_pack_finished 分支先行处理。_pending 为空由 line 241 前置 return 保证。
+	var forced_now: String = str(world_state.get("forcedNextEventId", "")).strip_edges()
+	if forced_now.is_empty() and not _is_at_pack_final_turn():
+		var pack_ctx_hw: Dictionary = _dict_or_empty(world_state.get("packContext", {}))
+		var hand_queue_hw: Array = pack_ctx_hw.get("handQueue", [])
+		if not hand_queue_hw.is_empty():
+			return _build_hand_window_response(hand_queue_hw)
+
 	# 说明：先自动接取任务，确保本回合事件选择能立即吃到 task_links 权重。
 	_check_auto_accept_tasks()
 
@@ -406,6 +457,60 @@ func confirm_location_select(location_id: String) -> Dictionary:
 		"ok": true,
 		"location_id": location_id,
 		"pack_capacity": int(_pack_config.get("defaultCapacity", 3))
+	}
+
+
+# 功能：盲选窗口——玩家从 K 张承诺手牌中盲选一张（E1 uid 贯穿）。
+# 说明：按 card_uid（非裸 index）注入：取该卡 logical_id 作 forcedNextEventId → move_card 到
+#       causal_chain → 从 handQueue 移除该 uid → 交还 preview_next_turn 走现成 forced 路径出真事件。
+#       后续 confirm_pending_turn(_with_forced_tier) 结算链路完全不动。承诺语义：选中即定，不重 roll。
+func confirm_hand_pick(card_uid: String) -> Dictionary:
+	if _is_world_ended():
+		return _build_world_ended_response()
+	if not _pending_turn_context.is_empty():
+		return {"ok": false, "error": "cannot pick hand while a turn is pending"}
+	if _card_store == null:
+		return {"ok": false, "error": "card store not initialized"}
+	var pack_ctx: Dictionary = _dict_or_empty(world_state.get("packContext", {}))
+	var hand_queue: Array = pack_ctx.get("handQueue", [])
+	if not (card_uid in hand_queue):
+		return {"ok": false, "error": "card_uid not in hand window: %s" % card_uid}
+	var card: CardData = _card_store.get_card(card_uid)
+	if card == null:
+		return {"ok": false, "error": "card instance missing: %s" % card_uid}
+	var event_id := str(card.logical_id)
+	# 注入 forced + 转区 causal_chain + 从窗口移除该 uid。
+	world_state["forcedNextEventId"] = event_id
+	_card_store.move_card(card_uid, "causal_chain")
+	hand_queue.erase(card_uid)
+	pack_ctx["handQueue"] = hand_queue
+	world_state["packContext"] = pack_ctx
+	print("[盲选] pick uid=%s → event=%s（窗口剩 %d）" % [card_uid, event_id, hand_queue.size()])
+	# 交还主循环：forced 路径填 _pending_turn_context 出真事件。
+	return preview_next_turn()
+
+
+# 功能：构建盲选窗口响应（K 张卡背的展示数据）。
+# 说明：每张返回 {uid, event_id, title}；前端只摊卡背，正面 title 备而不显（盲选）。
+func _build_hand_window_response(hand_queue: Array) -> Dictionary:
+	var cards: Array = []
+	for uid_variant in hand_queue:
+		var uid := str(uid_variant)
+		var card: CardData = _card_store.get_card(uid)
+		if card == null:
+			continue
+		var event_id := str(card.logical_id)
+		var event_def: Dictionary = _event_map.get(event_id, {})
+		cards.append({
+			"uid": uid,
+			"event_id": event_id,
+			"title": str(event_def.get("title", ""))
+		})
+	return {
+		"ok": true,
+		"phase": "hand_window",
+		"hand_window": cards,
+		"awaiting_input": true
 	}
 
 
@@ -3895,8 +4000,27 @@ func _ensure_pack_context() -> void:
 			"locationId": "",
 			"turnCapacity": 0,
 			"turnsElapsed": 0,
-			"interrupted": false
+			"interrupted": false,
+			"handQueue": []
 		}
+
+
+# 功能：确保卡牌实例 + Zone 权威态（CardZoneStore）就绪（E1 uid 贯穿）。
+# 说明：套用引擎「成员=运行时权威 + world_state 镜像」惯例（同 _affinity_map）。
+#       world_state.cardStore 有快照则反序列化 + 按 logical_id 重挂 def；否则新建 + 登记 MVP Zone。
+#       序列化写回（world_state["cardStore"] = _card_store.to_dict()）留将来加存档时接入。
+#       须在 _rebuild_event_map 之后调用（relink_defs 的 resolver 依赖 _event_map）。
+func _ensure_card_store() -> void:
+	var snapshot: Variant = world_state.get("cardStore", null)
+	if typeof(snapshot) == TYPE_DICTIONARY and snapshot != null:
+		_card_store = CardZoneStoreClass.from_dict(snapshot)
+		_card_store.relink_defs(func(lid: String): return _event_map.get(lid, {}))
+	else:
+		_card_store = CardZoneStoreClass.new()
+	# 登记 MVP Zone（盲选窗口 / 因果链 / 弃牌堆）；register_zone 幂等。
+	_card_store.register_zone("hand_window")
+	_card_store.register_zone("causal_chain")
+	_card_store.register_zone("discard")
 
 
 # 功能：初始化叙事包系统配置，从 world_state.packConfig 加载。
@@ -3912,6 +4036,9 @@ func _init_pack_config() -> void:
 		"final_event_pool_tag": str(raw.get("final_event_pool_tag", "")).strip_edges(),
 		"final_event_location_boost": int(raw.get("final_event_location_boost", 0)),
 		"final_event_pool_exhausted_forced_id": str(raw.get("final_event_pool_exhausted_forced_id", "")).strip_edges(),
+		# E1: 盲选窗口预抽张数 K（独立于 defaultCapacity；约束 K≥C=capacity−1）+ 窗口去重开关（默认关）。
+		"handSpread": int(raw.get("handSpread", 5)),
+		"pack_window_dedup": bool(raw.get("pack_window_dedup", false)),
 	}
 	# 末尾位池消耗记录（按 tag 分组持久化，支持多池共存与未来阶段切换）。
 	# 结构：{ tag → [event_id, ...] }；首次加载时初始化空字典。
@@ -4010,6 +4137,15 @@ func _advance_pack_turn() -> bool:
 # 功能：清空叙事包状态，准备进入地点选择。
 # 说明：清空 packContext 使 preview_next_turn 检测到空包并进入地点选择流程。
 func _clear_pack_context() -> void:
+	# E1: 清包前回收本包卡实例，避免跨包泄漏 _card_store——
+	#   ① handQueue 里未玩的盲选余牌；② causal_chain 里已选事件卡（confirm_hand_pick move 入，
+	#   每包至少 1 张，不清则逐包累积僵尸实例）。cards_in_zone 返回副本，遍历内 remove 安全。
+	if _card_store != null:
+		var old_ctx: Dictionary = _dict_or_empty(world_state.get("packContext", {}))
+		for uid in old_ctx.get("handQueue", []):
+			_card_store.remove_card(str(uid))
+		for uid in _card_store.cards_in_zone("causal_chain"):
+			_card_store.remove_card(str(uid))
 	# played_events：包内硬去重（REQ-001，2026-05-09）—— 单包内同一 event_id 不重复触发，
 	#   跨包仍可重复（叙事日常性）。普通调度路径在 _build_candidates 守门 4 消费，
 	#   forced / final_pool 路径不受影响。详见 [[代码重构_预启动]] §五·REQ-001。
@@ -4018,7 +4154,8 @@ func _clear_pack_context() -> void:
 		"turnCapacity": 0,
 		"turnsElapsed": 0,
 		"interrupted": false,
-		"played_events": []
+		"played_events": [],
+		"handQueue": []
 	}
 
 
@@ -4031,10 +4168,54 @@ func _start_new_pack(location_id: String) -> void:
 		"turnCapacity": capacity,
 		"turnsElapsed": 0,
 		"interrupted": false,
-		"played_events": []
+		"played_events": [],
+		"handQueue": []
 	}
 	world_state["currentLocationId"] = location_id
-	print("[叙事包] 新包开始: location=%s, capacity=%d" % [location_id, capacity])
+	# E1: 开包预抽 K 张承诺事件填盲选窗口（uid 实例入 _card_store / handQueue 存 uid）。
+	_draw_hand_window()
+	var hq_size: int = (_dict_or_empty(world_state.get("packContext", {})).get("handQueue", []) as Array).size()
+	print("[叙事包] 新包开始: location=%s, capacity=%d, handQueue=%d" % [location_id, capacity, hq_size])
+
+
+# 功能：开包预抽 K 张承诺事件，填盲选窗口 handQueue（E1 uid 贯穿）。
+# 说明：用现成 _build_candidates() 候选 + _weighted_pick 抽 K 个 event_id；每个经
+#       _card_store.create_card 分配 uid（zone=hand_window）→ handQueue 存 uid（非 event_id）。
+#       pack_window_dedup 关（默认）：同候选池 K 次独立抽样，允许重复（同 event_id → 不同 uid）。
+#       pack_window_dedup 开：抽后过滤候选，窗口内不重复。
+#       承诺语义：开包时刻一次性快照抽取，结算中途不重评剩余手牌。须在 packContext + currentLocationId
+#       已设之后调用（_build_candidates / _is_event_eligible 依赖当前地点）。
+func _draw_hand_window() -> void:
+	if _card_store == null:
+		return
+	var k := int(_pack_config.get("handSpread", 5))
+	var dedup := bool(_pack_config.get("pack_window_dedup", false))
+	var candidates := _build_candidates()
+	var hand_queue: Array = []
+	var ev_kind: int = CardDataClass.CardKind.EVENT
+	for i in k:
+		if candidates.is_empty():
+			break
+		var eid := _weighted_pick(candidates)
+		if eid.is_empty():
+			break
+		var card: CardData = _card_store.create_card(eid, ev_kind, {}, "hand_window")
+		if card != null:
+			hand_queue.append(card.card_uid)
+		if dedup:
+			var filtered: Array = []
+			for c in candidates:
+				if str((c as Dictionary).get("id", "")) != eid:
+					filtered.append(c)
+			candidates = filtered
+	var pack_ctx: Dictionary = _dict_or_empty(world_state.get("packContext", {}))
+	pack_ctx["handQueue"] = hand_queue
+	world_state["packContext"] = pack_ctx
+	# 候选池不足 K 时静默少抽（设计允许的 fallback）；告警提示配置异常，
+	# 并提醒 F1 须按 hand_window 实际长度渲染卡槽，勿按 K 固定索引（否则空位 / 越界）。
+	if hand_queue.size() < k:
+		push_warning("[叙事包] 盲选窗口实抽 %d < K=%d（候选池不足）" % [hand_queue.size(), k])
+	print("[叙事包] 盲选窗口预抽: K=%d, dedup=%s, 实抽=%d" % [k, str(dedup), hand_queue.size()])
 
 
 # 功能：检查叙事包是否处于需要进入地点选择的状态。

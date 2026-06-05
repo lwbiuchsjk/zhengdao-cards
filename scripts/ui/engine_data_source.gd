@@ -129,6 +129,24 @@ func events_for_pile() -> Dictionary:
 	# 防御: location_select drain 耗尽 MAX_AUTO_HOPS 后仍在 location_select 阶段 → 拒绝伪装成事件抽出
 	if str(preview.get("phase", "")) == "location_select":
 		return {"ok": false, "error": "location_select drain exceeded MAX_AUTO_HOPS"}
+	# E1 临时兼容 (A1 前兜底): preview 遇盲选窗口 phase, 现有前端尚未接盲选 UI (F1 才做),
+	# 此处自动选第一张承诺牌 (confirm_hand_pick) 退化为"单抽", 保持核心循环跑通。
+	# F1 盲选窗口 UI 接通后, 改由 pack_window_for_pile / pick_hand 处理, 移除本兜底。
+	if str(preview.get("phase", "")) == "hand_window":
+		var hw: Array = preview.get("hand_window", [])
+		if hw.is_empty():
+			return {"ok": false, "error": "hand_window with no cards"}
+		var first_uid := str((hw[0] as Dictionary).get("uid", ""))
+		if first_uid.is_empty():
+			return {"ok": false, "error": "hand_window card has empty uid"}
+		preview = _engine.confirm_hand_pick(first_uid)
+		if not preview.get("ok", false):
+			return {"ok": false, "error": "confirm_hand_pick failed: %s" % str(preview.get("error", ""))}
+		# 防御: confirm_hand_pick 注入 forced 后, preview 应走 forced 路径出真事件, 不应再返回 hand_window。
+		# 若仍是 hand_window (forced 优先性被破坏 / handQueue 未正确移除), 显式报错, 避免被当
+		# presentation 误解析成 title/body 全空的空白事件卡。
+		if str(preview.get("phase", "")) == "hand_window":
+			return {"ok": false, "error": "confirm_hand_pick did not advance past hand_window (forced 注入异常?)"}
 	# 抽出事件正文 (取消化前第一屏文字, 作为事件卡 body)
 	var title := str(preview.get("title", ""))
 	var body := _extract_presentation_body(preview)
@@ -161,6 +179,10 @@ func events_for_pile() -> Dictionary:
 				_pending_visible_option_ids[oid] = true
 	# 标记: 新事件抽出 → 未结算; outcome_for_option 结算后翻回 true
 	_pending_resolved = false
+	# 诊断日志 (E1 跑测定位): 适配器实际返回给前端的事件 + 是否有选项。
+	print("[适配器] events_for_pile → event_id=%s | title=%s | has_choice=%s | cp=%s" % [
+		event_id, title, str(has_choice), _pending_choice_point_id
+	])
 	return {
 		"ok": true,
 		"event_id": event_id,
@@ -178,6 +200,7 @@ func events_for_pile() -> Dictionary:
 #       threshold:   MarkerCheckResolver 的投入鉴定难度 D (S8 期占位 FALLBACK_DIFFICULTY)
 func options_for_event() -> Array:
 	if _engine == null or _pending_choice_point_id.is_empty():
+		print("[适配器] options_for_event → 选项数=0 (无 choice_point: '%s')" % _pending_choice_point_id)
 		return []
 	var cp_def: Dictionary = _choice_points_by_id.get(_pending_choice_point_id, {})
 	if cp_def.is_empty():
@@ -189,6 +212,7 @@ func options_for_event() -> Array:
 	# 兜底: 若 visible_ids 为空 (异常或非 choice 事件), 返回空列表而非全集, 避免暴露 engine 已排除的选项。
 	var out: Array = []
 	if _pending_visible_option_ids.is_empty():
+		print("[适配器] options_for_event → 选项数=0 (engine 可见选项集为空, cp=%s)" % _pending_choice_point_id)
 		return out
 	for option_variant in cp_def.get("options", []):
 		var option_def: Dictionary = option_variant
@@ -202,6 +226,7 @@ func options_for_event() -> Array:
 			"whitelist": _derive_whitelist(option_def),
 			"threshold": _derive_difficulty(option_def),
 		})
+	print("[适配器] options_for_event → cp=%s | 选项数=%d" % [_pending_choice_point_id, out.size()])
 	return out
 
 
