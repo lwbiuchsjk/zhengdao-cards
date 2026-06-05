@@ -125,7 +125,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 - [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) — **Line B ✅ 全段完成**(2026-05-27~28):S1 数据契约 + S2 资源标记 + S3 选项调度 + S8.0 鉴定算法 + S8.2-S8.7 §3.2 汇合.**核心循环用真数据 playtest 跑通**(loc_pharmacy 包内 turn 推进 + 末位池命中鉴定型 + 包结束 + 自省透明消化 + 下一包).engine 加 2 个 public 接口(`confirm_pending_turn_with_forced_tier` + `cancel_pending_turn`)+ `_apply_option_resolution` forced 短路(原 vibe-test 路径零影响).新建 `engine_data_source.gd` 适配器(~290 行, 3 处透明消化抹平 vibe-test/zhengdao 事件语义差)+ `mock_data_source.gd` fallback(USE_ENGINE=false 路径).card_table 4 个调用点接 `_data_source`.单元冒烟 5/5 + playtest ✅.**S8 暴露 3 个卡牌化前置 UX 议题 → [[卡牌前端交互设计]] §3.X 立项**(B④ 前置).**S4-S7 增强切片延后**(字段先建, 行为后填).
 
-- [完整事件流程_实施](Design/zhengdao-cards/进度/完整事件流程_实施.md) — **卡牌实体地基 + 盲选承诺窗口 + §2.9 聚焦补全 实施文档**(2026-06-02 落盘):§3.X.3 收口的盲选承诺窗口(开包预抽 K 张承诺事件 / 卡背盲选 / 不补牌 / skeleton 压轴 window-of-1)+ §2.9 未实现的三块聚焦骨架(事件锁定 / 一层事件级聚焦 /【继续】卡收尾)合并为一条完整事件循环切片. **E0 卡牌实体地基**(三原语: 稳定实例 uid + 实例状态 def_ref+modifiers + Zone 一等实体;**真源在 world_state、前端注册表镜像**;最小实现、操作/效果延后)**三块全部 ✅**(2026-06-03):数据模型 `card_data.gd`(7/7)+ 权威态 `card_zone_store.gd`(9/9)+ 视图层 `card_registry.gd`(14/14)+ `card.gd` 持 model + `card_table.gd` 回修 Line A 6 类卡 + spawn/despawn 工厂;真实 app + GUI 回归 + codex P1/P2/P3 全无. 切片序 **E0 ✅ → E1→A1→F1-F5→I1**(**下一接手点 = E1 引擎包模型**), 含 engine 真数据冒烟流程。
+- [完整事件流程_实施](Design/zhengdao-cards/进度/完整事件流程_实施.md) — **卡牌实体地基 + 盲选承诺窗口 + §2.9 聚焦补全 实施文档**(2026-06-02 落盘):§3.X.3 收口的盲选承诺窗口(开包预抽 K 张承诺事件 / 卡背盲选 / 不补牌 / skeleton 压轴 window-of-1)+ §2.9 未实现的三块聚焦骨架(事件锁定 / 一层事件级聚焦 /【继续】卡收尾)合并为一条完整事件循环切片. **E0 卡牌实体地基**(三原语: 稳定实例 uid + 实例状态 def_ref+modifiers + Zone 一等实体;**真源在 world_state、前端注册表镜像**;最小实现、操作/效果延后)**三块全部 ✅**(2026-06-03):数据模型 `card_data.gd`(7/7)+ 权威态 `card_zone_store.gd`(9/9)+ 视图层 `card_registry.gd`(14/14)+ `card.gd` 持 model + `card_table.gd` 回修 Line A 6 类卡 + spawn/despawn 工厂;真实 app + GUI 回归 + codex P1/P2/P3 全无. **E1 引擎包模型 ✅**(2026-06-04, 提交 34a0ca6): uid 贯穿盲选窗口(`_card_store` 持 handQueue uid + `confirm_hand_pick(uid)` + 余牌/causal_chain 清理 + `hand_window` phase), 平行加队列不动现有结算链路; 冒烟 24/24 + GUI 跑测 + `/code-review`(codex 两次卡死改本地)1 P2(causal_chain 泄漏)+2 P3 修复. 切片序 **E0 ✅ → E1 ✅ → A1→F1-F5→I1**(**下一接手点 = A1 适配器**), 含 engine 真数据冒烟流程。
 
 ## 下一阶段工作顺序(MVP 1 期实施 — 可新会话接手)
 
@@ -149,7 +149,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 **新会话默认接手: 完整事件流程切片(E0→I1)→ 之后 B④ 普通事件资产**:
 
-§3.X.3 的盲选窗口落地需引擎包模型改动, 且 §2.9 聚焦循环有三块未实现, 又涉"卡牌即数据实体"地基 —— 合并为 [[完整事件流程_实施]] 一条切片, 序 **E0 卡牌实体地基(uid/modifiers/Zone, world_state 权威)✅ → E1 引擎包模型(handQueue 升级 uid 实例)→ A1 适配器 → F1-F5 前端(盲选窗口 + §2.9 缺口)→ I1 整合冒烟**. 大改动, 已走设计先行 + 冒烟流程落盘. **E0 三块全部完成(2026-06-03), 下一会话接手 E1** —— 接手前先读 [[完整事件流程_实施]] 顶部「新会话启动必读」+ §四 E1。
+§3.X.3 的盲选窗口落地需引擎包模型改动, 且 §2.9 聚焦循环有三块未实现, 又涉"卡牌即数据实体"地基 —— 合并为 [[完整事件流程_实施]] 一条切片, 序 **E0 卡牌实体地基(uid/modifiers/Zone, world_state 权威)✅ → E1 引擎包模型(uid 贯穿盲选窗口)✅ → A1 适配器 → F1-F5 前端(盲选窗口 + §2.9 缺口)→ I1 整合冒烟**. 大改动, 已走设计先行 + 冒烟流程落盘. **E0+E1 完成(E1: 2026-06-04 提交 34a0ca6), 下一会话接手 A1** —— 接手前先读 [[完整事件流程_实施]] 顶部「新会话启动必读」+ §四 A1。
 
 **之后**: 完整事件流程跑通 → **B④ 少量普通事件资产(§7.1)+ 数值标定**(需可跑循环 playtest);**X.4 鉴定难度·成功率·标记**(解 adapter `FALLBACK_DIFFICULTY` 占位)可前置或并行.
 
