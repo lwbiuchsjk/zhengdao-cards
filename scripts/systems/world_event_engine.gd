@@ -4023,6 +4023,15 @@ func _ensure_card_store() -> void:
 	_card_store.register_zone("discard")
 
 
+# 功能：取卡牌实例 + Zone 权威态（CardZoneStore）。
+# 说明：A1 适配器 / F1 前端镜像取 uid 用的唯一对外访问面（引擎是 uid 真源）。
+#       返回引擎持有的实例本身（非副本）；调用方只读，勿在外部直接 move/remove，
+#       区域转移须走引擎接口（confirm_hand_pick 等）以保持 world_state 镜像一致。
+#       _card_store 在 load_from_data → _ensure_card_store 后必非 null。
+func get_card_store() -> CardZoneStore:
+	return _card_store
+
+
 # 功能：初始化叙事包系统配置，从 world_state.packConfig 加载。
 # 说明：缺省时使用默认值，保证系统在无配置时也能正常运行。
 #       末尾位池抽取相关字段（final_event_pool_tag / final_event_location_boost /

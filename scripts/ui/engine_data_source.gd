@@ -52,6 +52,9 @@ var _pending_visible_option_ids: Dictionary = {}
 # 当前事件是否已结算 (events_for_pile 抽出 → false; outcome_for_option 结算 → true)。
 # events_for_pile 据此区分"重抽未结算事件" (cancel) vs "结算后抽下一事件" (不 cancel, 保留 turn 推进)。
 var _pending_resolved: bool = true
+# A1: pack_window_for_pile 走 single 路 (skeleton 末位回合) 时, preview 已 set 引擎 pending,
+# 暂存该 preview 供 pick_hand 直接 finalize (免二次 preview)。blind 路与 pick 后清空。
+var _pending_hand_preview: Dictionary = {}
 
 # ============================================================
 # 生命周期
@@ -147,50 +150,105 @@ func events_for_pile() -> Dictionary:
 		# presentation 误解析成 title/body 全空的空白事件卡。
 		if str(preview.get("phase", "")) == "hand_window":
 			return {"ok": false, "error": "confirm_hand_pick did not advance past hand_window (forced 注入异常?)"}
-	# 抽出事件正文 (取消化前第一屏文字, 作为事件卡 body)
-	var title := str(preview.get("title", ""))
-	var body := _extract_presentation_body(preview)
-	var event_id := str(preview.get("event_id", ""))
-	# 透明消化 presentation 屏: 卡牌前端事件卡只显示一屏正文,
-	# 引擎的多屏叙事推进对 card_table 无意义, 自动 confirm("") 推到 choice / confirm 阶段。
-	# 与 location_select 透明消化同性质 (适配器层抹平 vibe-test/zhengdao 事件语义差)。
-	# 自省事件 (sys_reflection 等) 末屏的 presents=location_select 走专用接口
-	# confirm_reflection_location_select; zhengdao-cards MVP 1 期不接自省 UI (LineB §一·不做)。
-	var hops: int = 0
-	while bool(preview.get("ok", false)) and str(preview.get("phase", "")) == "presentation":
-		preview = _drain_one_presentation_step(preview)
-		hops += 1
-		if hops > MAX_AUTO_HOPS:
-			return {"ok": false, "error": "presentation drain exceeded MAX_AUTO_HOPS"}
-	if not preview.get("ok", false):
-		return {"ok": false, "error": str(preview.get("error", "drain failed"))}
-	_pending_choice_point_id = ""
-	_pending_visible_option_ids.clear()
-	var has_choice := bool(preview.get("has_choice", false))
-	if has_choice:
-		var choice: Dictionary = preview.get("choice", {})
-		_pending_choice_point_id = str(choice.get("choice_point_id", ""))
-		# 记下 engine S3 _build_option_set 筛选后的可见 option id 集合,
-		# 供 options_for_event 过滤 cp_def.options (P2-1 修复)。
-		for opt_v in choice.get("options", []):
-			var opt: Dictionary = opt_v
-			var oid := str(opt.get("id", ""))
-			if not oid.is_empty():
-				_pending_visible_option_ids[oid] = true
-	# 标记: 新事件抽出 → 未结算; outcome_for_option 结算后翻回 true
-	_pending_resolved = false
-	# 诊断日志 (E1 跑测定位): 适配器实际返回给前端的事件 + 是否有选项。
-	print("[适配器] events_for_pile → event_id=%s | title=%s | has_choice=%s | cp=%s" % [
-		event_id, title, str(has_choice), _pending_choice_point_id
-	])
+	# A1: presentation 消化 + choice 提取 + _pending_* 收尾抽到公共尾函数, 与 pick_hand 共用。
+	return _finalize_event_from_preview(preview)
+
+
+# 功能: 摊出盲选窗口 — 调 preview + location 透明消化, 返回 K 张卡背数据 (F1 消费, 只 preview 不 commit)。
+# 返回: { ok, mode, cards:[{uid, event_id, title}] } 或 { ok:false, error }
+#   mode="blind":  盲选窗口路径, cards 为 K 张承诺手牌 (uid 非空, title 备而不显)。
+#   mode="single": skeleton 末位回合无窗口, 引擎直接吐真事件 → window-of-1 (uid 空)。
+#                  该 preview 已 set 引擎 pending, stash 供 pick_hand 直接 finalize ("预览即锁定",
+#                  见实施 §六; 安全性挂 F2 事件锁定, 入口防御 cancel + preview 幂等双保险自愈)。
+func pack_window_for_pile() -> Dictionary:
+	if _engine == null:
+		return {"ok": false, "error": "engine not initialized"}
+	_pending_hand_preview = {}
+	# 防御: 残留未结算的真事件 pending (F2 应已挡住玩家路径; 此处兜异常重入) → cancel 复位。
+	# skeleton 的"预览即锁定"pending 不在此清 (其 _pending_resolved 仍 true), 由 preview 幂等自愈。
+	if not _pending_resolved:
+		_engine.cancel_pending_turn()
+		_pending_resolved = true
+	var preview: Dictionary = _engine.preview_next_turn()
+	# location_select 透明消化 (与 events_for_pile 同循环; 开包/包结束阶段对前端不可见)。
+	for hop in MAX_AUTO_HOPS:
+		if not preview.get("ok", false):
+			return {"ok": false, "error": str(preview.get("error", "preview failed"))}
+		if str(preview.get("phase", "")) != "location_select":
+			break
+		var options: Array = preview.get("options", [])
+		if options.is_empty():
+			return {"ok": false, "error": "location_select with no options"}
+		var loc_id := str((options[0] as Dictionary).get("location_id", ""))
+		if loc_id.is_empty():
+			return {"ok": false, "error": "location_select option has empty location_id"}
+		var sel := _engine.confirm_location_select(loc_id)
+		if not sel.get("ok", false):
+			return {"ok": false, "error": "confirm_location_select failed: %s" % str(sel.get("error", ""))}
+		preview = _engine.preview_next_turn()
+	if str(preview.get("phase", "")) == "location_select":
+		return {"ok": false, "error": "location_select drain exceeded MAX_AUTO_HOPS"}
+	# blind 路: 盲选窗口 → 透传 K 张卡背 (uid + event_id + title)。
+	if str(preview.get("phase", "")) == "hand_window":
+		var hw: Array = preview.get("hand_window", [])
+		if hw.is_empty():
+			return {"ok": false, "error": "hand_window with no cards"}
+		var cards: Array = []
+		for c_v in hw:
+			var c: Dictionary = c_v
+			var uid := str(c.get("uid", ""))
+			if uid.is_empty():
+				return {"ok": false, "error": "hand_window card has empty uid"}
+			cards.append({
+				"uid": uid,
+				"event_id": str(c.get("event_id", "")),
+				"title": str(c.get("title", "")),
+			})
+		print("[适配器] pack_window_for_pile → mode=blind | K=%d" % cards.size())
+		return {"ok": true, "mode": "blind", "cards": cards}
+	# single 路: skeleton 直接吐真事件 (preview 已 set pending) → window-of-1。stash 供 pick_hand finalize。
+	# P2 防御: 仅真实 pending 事件 (event_id 非空且 phase != ended) 走 single; 否则 (世界结束 / 未知 phase)
+	#   显式报错, 避免把 ended/空白响应包成卡背交给前端、再被 pick_hand("") 消化出错误状态。
+	var sk_event_id := str(preview.get("event_id", ""))
+	var sk_phase := str(preview.get("phase", ""))
+	if sk_event_id.is_empty() or sk_phase == "ended":
+		return {"ok": false, "error": "pack_window_for_pile 非预期 phase=%s, event_id=%s (世界结束/未知态)" % [sk_phase, sk_event_id]}
+	_pending_hand_preview = preview
+	print("[适配器] pack_window_for_pile → mode=single (skeleton) | event_id=%s" % sk_event_id)
 	return {
 		"ok": true,
-		"event_id": event_id,
-		"title": title,
-		"body": body,
-		"has_choice": has_choice,
-		"choice_point_id": _pending_choice_point_id,
+		"mode": "single",
+		"cards": [{
+			"uid": "",
+			"event_id": sk_event_id,
+			"title": str(preview.get("title", "")),
+		}],
 	}
+
+
+# 功能: 盲选一张手牌 → 出真实承诺事件 (F1 点牌回调)。
+# 参数: card_uid — blind 路传引擎 handQueue 的 uid; single 路 (skeleton) 传空串。
+# 返回: 同 events_for_pile 形 { ok, event_id, title, body, has_choice, choice_point_id } 或 { ok:false, error }
+func pick_hand(card_uid: String) -> Dictionary:
+	if _engine == null:
+		return {"ok": false, "error": "engine not initialized"}
+	var preview: Dictionary
+	if card_uid.is_empty():
+		# single 路 (skeleton): 用 pack_window_for_pile stash 的 preview (已 pending)。
+		if _pending_hand_preview.is_empty():
+			return {"ok": false, "error": "pick_hand(single) without staged preview (先调 pack_window_for_pile?)"}
+		preview = _pending_hand_preview
+		_pending_hand_preview = {}
+	else:
+		# blind 路: confirm_hand_pick 注入 forced → 引擎走 forced 路径出真事件。
+		_pending_hand_preview = {}
+		preview = _engine.confirm_hand_pick(card_uid)
+		if not preview.get("ok", false):
+			return {"ok": false, "error": "confirm_hand_pick failed: %s" % str(preview.get("error", ""))}
+		# 防御: forced 注入后应脱离 hand_window phase; 仍是则 forced 优先性被破坏, 显式报错。
+		if str(preview.get("phase", "")) == "hand_window":
+			return {"ok": false, "error": "confirm_hand_pick did not advance past hand_window (forced 注入异常?)"}
+	return _finalize_event_from_preview(preview)
 
 
 # 功能: 取当前 pending 事件的选项列表 (供前端展开选项卡)。
@@ -300,6 +358,59 @@ func _index_choice_points(world_event_data: Dictionary) -> void:
 		var cp_id := str(cp.get("id", ""))
 		if not cp_id.is_empty():
 			_choice_points_by_id[cp_id] = cp
+
+
+# 功能: 把一份已脱离 location_select / hand_window 的 preview 收尾为前端事件卡数据。
+# 说明: A1 抽出的公共尾 — events_for_pile (skeleton/forced 路径) 与 pick_hand 共用, 杜绝两份漂移。
+#   流程: 取首屏 title/body → 透明消化 presentation 屏 → 提取 choice_point + 可见 option 集
+#         → 标 _pending_resolved=false (新事件待结算)。
+#   透明消化: 卡牌前端事件卡只显示一屏正文, 引擎多屏叙事推进对 card_table 无意义, 自动 confirm("")
+#             推到 choice / confirm 阶段 (与 location_select 同性质, 抹平 vibe-test/zhengdao 语义差)。
+#             自省末屏 presents=location_select 走 _drain_one_presentation_step 内的专用分支。
+# 返回: { ok, event_id, title, body, has_choice, choice_point_id } 或 { ok:false, error }
+func _finalize_event_from_preview(preview: Dictionary) -> Dictionary:
+	if not preview.get("ok", false):
+		return {"ok": false, "error": str(preview.get("error", "preview not ok"))}
+	# P1 修复: 到此引擎必有活跃 pending (confirm_hand_pick / forced / skeleton 已 set)。立即标"未结算",
+	#   使后续任何 early-return (presentation drain 溢出 / drain 失败) 仍让下次 pack_window_for_pile 的
+	#   入口防御 cancel 生效, 避免引擎卡在同一 pending、适配器却以为已结算的失配。
+	_pending_resolved = false
+	# title/body 取消化前第一屏 (作为事件卡正文); event_id 同样取首屏 (消化不改事件身份)。
+	var title := str(preview.get("title", ""))
+	var body := _extract_presentation_body(preview)
+	var event_id := str(preview.get("event_id", ""))
+	var hops: int = 0
+	while bool(preview.get("ok", false)) and str(preview.get("phase", "")) == "presentation":
+		preview = _drain_one_presentation_step(preview)
+		hops += 1
+		if hops > MAX_AUTO_HOPS:
+			return {"ok": false, "error": "presentation drain exceeded MAX_AUTO_HOPS"}
+	if not preview.get("ok", false):
+		return {"ok": false, "error": str(preview.get("error", "drain failed"))}
+	_pending_choice_point_id = ""
+	_pending_visible_option_ids.clear()
+	var has_choice := bool(preview.get("has_choice", false))
+	if has_choice:
+		var choice: Dictionary = preview.get("choice", {})
+		_pending_choice_point_id = str(choice.get("choice_point_id", ""))
+		# 记下 engine S3 _build_option_set 筛选后的可见 option id 集合, 供 options_for_event 过滤 (P2-1 修复)。
+		for opt_v in choice.get("options", []):
+			var opt: Dictionary = opt_v
+			var oid := str(opt.get("id", ""))
+			if not oid.is_empty():
+				_pending_visible_option_ids[oid] = true
+	# _pending_resolved 已在函数顶部置 false (P1 修复), 此处不再重复。
+	print("[适配器] finalize → event_id=%s | title=%s | has_choice=%s | cp=%s" % [
+		event_id, title, str(has_choice), _pending_choice_point_id
+	])
+	return {
+		"ok": true,
+		"event_id": event_id,
+		"title": title,
+		"body": body,
+		"has_choice": has_choice,
+		"choice_point_id": _pending_choice_point_id,
+	}
 
 
 # 从 preview 返回结构中抽取 presentation body 文本 (用于事件卡正文)。
