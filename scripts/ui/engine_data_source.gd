@@ -226,6 +226,19 @@ func pack_window_for_pile() -> Dictionary:
 	}
 
 
+# 功能: 按 uid 取引擎 store 持有的 CardData (持久盘面 · DD1 镜像派)。
+# 说明: blind 路的盲选卡背是引擎预抽的 handQueue 实例, 前端只镜像、不在前端 store 自建 ——
+#       前端卡 model 直接持引擎这份 CardData → 前端卡 uid == 引擎 uid, registry 可按引擎 uid
+#       寻址该持久手牌卡节点 (杜绝 F1 双 store 同 cN 空间撞号)。引擎是 uid 真源, 调用方只读。
+func engine_card_data(uid: String) -> CardData:
+	if _engine == null:
+		return null
+	var store: CardZoneStore = _engine.get_card_store()
+	if store == null:
+		return null
+	return store.get_card(uid)
+
+
 # 功能: 盲选一张手牌 → 出真实承诺事件 (F1 点牌回调)。
 # 参数: card_uid — blind 路传引擎 handQueue 的 uid; single 路 (skeleton) 传空串。
 # 返回: 同 events_for_pile 形 { ok, event_id, title, body, has_choice, choice_point_id } 或 { ok:false, error }

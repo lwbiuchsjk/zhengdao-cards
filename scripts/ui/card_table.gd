@@ -26,7 +26,6 @@ const ZONE_CHAIN := "causal_chain"
 const ZONE_DISCARD := "discard"
 # E0 结构性卡的固定 logical_id(无引擎 def, 用约定常量)
 const LID_LOCATION := "loc_anchor"
-const LID_DECK := "event_deck"
 const LID_LEAVE := "leave"
 
 # Line B S8.3: USE_ENGINE 开关 — true = 走真引擎 (EngineDataSource), false = 走 Line A 原 mock (MockDataSource)。
@@ -46,11 +45,15 @@ var _panning: bool = false
 
 # ---- 因果链(§2.3)状态 ----
 const SLOT_DX := 220.0    # 因果链横向间距(事件→选项→结果 始终向右; 卡宽 200 + 间隙)
-var _chain_nodes: Array[Node] = []   # 当前链上的卡, 用于清空
+const BOARD_DX := 220.0   # 持久盘面卡背横向间距(待办盘面一排)
+var _chain_nodes: Array[Node] = []   # 当前 active 事件链的卡/标记(事件→选项→结果), 单事件粒度清场
 var _option_cards: Array[Node] = []  # 当前选项卡(选定后清除未选中的)
-var _window_cards: Array[Node] = []  # F1 盲选窗口: 当前摊出的 K 张卡背(盲选后未选中的消散)
-var _window_picked: bool = false     # F1 盲选守卫: 窗口期已选过 → 拒绝重复点(防消散 tween 内重复触发)
-var _chain_origin: Vector2 = Vector2.ZERO
+# ---- 持久盘面(批次一: 待办盘面跨事件留桌; 真源 [[事件包交互流程_持久盘面与流程驱动_MVP]]) ----
+var _board_cards: Array[Node] = []   # 待办盘面卡背(镜像引擎 handQueue): 盲选一张少一张, 余背留桌
+var _board_active: bool = false      # 盲选守卫: 已有 active 事件结算中 → 余背暂不可选(批次二继续后解锁)
+var _location_locked: bool = false   # F2: 地点卡开包瞬间锁定, MVP 单程不恢复
+var _board_origin: Vector2 = Vector2.ZERO   # 盘面区起点(卡背横排基准; §五边原型边定)
+var _chain_origin: Vector2 = Vector2.ZERO   # 因果链区起点(选中卡飞抵此处翻开+展开)
 var _options_shown: bool = false     # 选项已展开守卫(同步置位, 防翻牌 tween 期间重复点击)
 var _result_shown: bool = false
 var _result_revealed: bool = false   # 结果已揭示守卫(防屏息窗口内重复点击)
@@ -130,12 +133,16 @@ func _spawn_card(logical_id: String, kind: int, zone_id: String, parent: Node,
 	return c
 
 ## E0 数据层注销: Card 转入目标 Zone(数据留档)+ 注销前端镜像。不负责视觉回收(非卡 no-op)。
+## DD1 镜像安全: 镜像卡(引擎 store 持有、前端 _zone_store 无)只注销镜像、不动前端 store
+##   (否则 move_card 对不存在 uid 会 push_warning); 引擎侧 store 的清理由引擎 _clear_pack_context
+##   负责(批次二继续推进时触发)。前端自持卡照常转 discard 留档。
 func _detach_card_data(node: Node, to_zone: String = ZONE_DISCARD) -> void:
 	if node == null or not (node is CardScn):
 		return
 	var model: CardData = node.get("model")
 	if model != null and not model.card_uid.is_empty():
-		_zone_store.move_card(model.card_uid, to_zone)
+		if _zone_store.has_card(model.card_uid):
+			_zone_store.move_card(model.card_uid, to_zone)
 		_registry.unregister(node)
 
 ## E0 统一 despawn: 数据注销 + 立即视觉回收。
@@ -209,15 +216,13 @@ func _build_system_buttons() -> void:
 	quit_btn.pressed.connect(func() -> void: get_tree().quit())
 	hbox.add_child(quit_btn)
 
-## 地点锚点簇(§2.3, 持久, 上区左端): 地点卡 + 事件牌库 + 我要走
+## 地点锚点簇(§2.3, 持久, 上区左端): 地点卡 + 我要走
+## 批次一: 移除【事件牌库】卡 —— 开包入口并入【地点卡】(语义自洽: 事件本由地点调度产出)。
 func _build_anchor_cluster() -> void:
 	var loc := _spawn_card(LID_LOCATION, CardScn.CardType.LOCATION, ZONE_ANCHOR, _upper_zone,
 		"青石镇", "你暂居此处，江湖讯息往来。", true)
 	loc.position = Vector2(440, 520)
-	var deck := _spawn_card(LID_DECK, CardScn.CardType.DECK, ZONE_ANCHOR, _upper_zone,
-		"事件牌库", "", false, "事件牌库")  # 牌背堆; back_label 与抽出的"事件"牌背区分
-	deck.position = Vector2(700, 520)
-	deck.clicked.connect(func(_c: CardScn) -> void: _start_chain())  # 点击抽牌起链
+	loc.clicked.connect(func(_c: CardScn) -> void: _open_pack())  # 点地点卡 = 开本地点事件包
 	var leave := _spawn_card(LID_LEAVE, CardScn.CardType.LEAVE, ZONE_ANCHOR, _upper_zone,
 		"我要走", "另择去处。", true)
 	leave.position = Vector2(440, 840)
@@ -250,13 +255,19 @@ func _build_hand_zone() -> void:
 			card.add_child(m)
 			m.dropped.connect(_on_marker_dropped)  # 投入处理: 拖到选项上 → 绑定到选项
 
-# ---------- 因果链动态槽位(§2.3, 验 B③#5) ----------
+# ---------- 持久盘面 + 因果链(批次一; §2.3, 验 B③#5) ----------
 
-## 抽牌起新链(F1 盲选窗口): 清空旧链 → 调 pack_window_for_pile 拿承诺窗口 →
-## 按 mode 摊出 K 张(blind)/ 1 张(single skeleton)卡背, 横排; 每张点击接 _on_hand_pick。
-func _start_chain() -> void:
-	_clear_chain()
-	_chain_origin = Vector2(1010, 620)  # 事件在锚点簇右侧; 选项/结果向右依次展开(始终左→右)
+## 开包(批次一): 点【地点卡】触发。调 pack_window_for_pile 拿承诺窗口 → 摊出 K 张(blind)/
+## 1 张(single skeleton)卡背作【待办盘面】横排 → 地点卡锁定。盘面卡背跨事件留桌, 由 _on_board_pick
+## 逐张盲选, 余背不消散。真源: [[事件包交互流程_持久盘面与流程驱动_MVP]] §二/§九批次一。
+func _open_pack() -> void:
+	if _location_locked:
+		return  # F2: 地点卡开包后锁定, MVP 单程不恢复, 再点无反应
+	# 防御性整桌清场(单程下仅首次开包跑, 盘面/链均空 → 实为 no-op; 防异常重入残留)。
+	_clear_board()
+	_clear_event_chain()
+	_board_origin = Vector2(760, 480)   # 盘面横排起点: 地点卡右侧偏上(§五边原型边定)
+	_chain_origin = Vector2(760, 900)   # 因果链区起点: 盘面下方; 选中卡飞抵此处翻开+向右展开
 	var window: Dictionary = _data_source.pack_window_for_pile()
 	if not window.get("ok", false):
 		push_error("[card_table] pack_window_for_pile failed: %s" % str(window.get("error", "")))
@@ -265,46 +276,71 @@ func _start_chain() -> void:
 	if cards.is_empty():
 		push_error("[card_table] pack_window_for_pile 返回空窗口")
 		return
-	_window_cards.clear()
-	_window_picked = false
+	_location_locked = true   # 开包即锁(F2)
+	_board_cards.clear()
+	_board_active = false
+	var mode := str(window.get("mode", ""))
 	for i in cards.size():
 		var cd: Dictionary = cards[i]
 		var uid := str(cd.get("uid", ""))          # blind: 引擎 handQueue uid; single(skeleton): 空串
-		var event_id := str(cd.get("event_id", "")) # 卡背 logical_id(盲选时玩家不可见, 翻开才显文字)
-		# 摊卡背: face_up=false, title/body 留空(盲选), 翻开后由 pick_hand 返回填入。
-		# uid 采用(前端卡 uid == 引擎 uid)F1 暂不做: 前端/引擎双 store 同 cN 空间会撞号, 且 pick 用闭包
-		# pick_uid 直传引擎 uid、不依赖前端卡 uid。正确实现(手牌卡只镜像引擎 store)随持久盘面落地
-		# (见 [[事件包交互流程_持久盘面与流程驱动_MVP]] §四)。故此处前端自分配 uid。
-		var back := _spawn_card(event_id, CardScn.CardType.EVENT, ZONE_CHAIN, _upper_zone,
-			"", "", false, "")
-		back.position = Vector2(_chain_origin.x + i * SLOT_DX, _chain_origin.y)  # 横排, 复用因果链偏移
-		_chain_nodes.append(back)
-		_window_cards.append(back)
+		var event_id := str(cd.get("event_id", "")) # 卡背 logical_id(盲选时不可见, 翻开才显文字)
+		# DD1 镜像派: blind 卡背是引擎预抽的 handQueue 实例 → 镜像引擎 store(前端卡 uid == 引擎 uid,
+		# 不进前端 _zone_store, 杜绝双 store 撞号)。single(skeleton, uid 空)无引擎 handQueue 实例 →
+		# 退前端自分配(批次二骨架登场再统一; pick 走 stash, uid 空闭包)。
+		var back: CardScn
+		if mode == "blind" and not uid.is_empty():
+			back = _spawn_mirror_card(uid, event_id, _upper_zone)
+			if back == null:
+				continue  # 不变量违例(引擎取数失败), 已报错 → 跳过此卡(盘面会少一张, 故意暴露而非静默)
+		else:
+			back = _spawn_card(event_id, CardScn.CardType.EVENT, ZONE_CHAIN, _upper_zone, "", "", false, "")
+		back.position = Vector2(_board_origin.x + i * BOARD_DX, _board_origin.y)  # 待办盘面横排
+		_board_cards.append(back)
 		# 闭包按值捕获引擎下发的 uid + 节点(blind 传 uid / single 传空串给 pick_hand)。
 		var pick_uid := uid
-		back.clicked.connect(func(c: CardScn) -> void: _on_hand_pick(c, pick_uid))
+		back.clicked.connect(func(c: CardScn) -> void: _on_board_pick(c, pick_uid))
 
-## 盲选一张手牌(F1): 调 pick_hand → 选中翻开为真实事件 + 余背消散 → 接事件流程(展开选项)。
-## 同步守卫 _window_picked 防消散 tween 期间重复点击。
-func _on_hand_pick(chosen: CardScn, pick_uid: String) -> void:
-	if _window_picked:
-		return
-	_window_picked = true
+## 镜像 spawn(DD1): 手牌卡背只持引擎 store 的 CardData + 进 registry 镜像, 不进前端 _zone_store。
+## 故前端卡 uid 即引擎 uid, registry 可按引擎 uid 寻址持久手牌卡节点(为"引擎指定操作某张持久卡 →
+## 前端联动"铺路)。引擎取数失败属不变量违例(uid 来自引擎刚预抽进 handQueue 的同一 store, get_card
+## 必命中)→ 响亮报错 + 返回 null(由调用方跳过), 不静默退前端自建(否则 uid 错配难诊断, 违 DD1)。
+func _spawn_mirror_card(uid: String, _logical_id: String, parent: Node) -> CardScn:
+	var data: CardData = null
+	if _data_source.has_method("engine_card_data"):
+		data = _data_source.engine_card_data(uid)
+	if data == null:
+		push_error("[card_table] 镜像取引擎 CardData 失败 uid=%s (不变量违例: handQueue uid 应在引擎 store)" % uid)
+		return null
+	var c := CardScn.new()
+	c.model = data                  # 持引擎 CardData → 前端卡 uid == 引擎 uid
+	c.card_type = data.card_kind
+	c.title_text = ""
+	c.body_text = ""
+	c.start_face_up = false
+	c.back_label = ""
+	parent.add_child(c)
+	_registry.register(c)           # 只镜像引擎 store, 不进前端 _zone_store(避免双 store 撞号)
+	return c
+
+## 盲选盘面一张(批次一): 调 pick_hand → 翻开为真实事件; 余背【留桌】不消散; 选中卡转因果链区
+## 展开选项。守卫 _board_active: active 事件结算中余背暂不可选(继续清场后解锁 → 批次二)。
+func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
+	if _board_active:
+		return  # 已有 active 事件: 余背暂不可选(防并发; 批次二继续卡推进后才解锁下一张)
+	_board_active = true
 	var event_info: Dictionary = _data_source.pick_hand(pick_uid)
 	if not event_info.get("ok", false):
 		push_error("[card_table] pick_hand failed: %s" % str(event_info.get("error", "")))
-		_window_picked = false  # 失败放守卫, 允许重试(异常恢复)
+		_board_active = false  # 失败放守卫, 允许重试(异常恢复)
 		return
-	# 余背消散(_fade_and_free 会从 _chain_nodes 摘除 + 转 discard + 淡出回收)。
-	for w in _window_cards:
-		if w != chosen and is_instance_valid(w):
-			_fade_and_free(w)
-	_window_cards.clear()
-	# 选中卡: 填真实事件文字 → 归位到事件槽(若非首位) → 翻开 → 展开选项。
+	# 持久盘面: 余背【不消散、留桌】; 仅把选中卡从盘面摘出、转入 active 事件链。
+	_board_cards.erase(chosen)
+	_chain_nodes.append(chosen)   # 计入事件链 → 批次二继续清场时随链回收(非盘面回收)
+	# 选中卡: 填真实事件文字 → 飞到因果链起点 → 翻开 → 展开选项。
 	chosen.set_face_text(str(event_info.get("title", "")), str(event_info.get("body", "")))
 	if chosen.position != _chain_origin:
 		var tw := chosen.create_tween()
-		tw.tween_property(chosen, "position", _chain_origin, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(chosen, "position", _chain_origin, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	chosen.flip_to(true)
 	# 接事件流程: 展开选项(F1 不含 F3 事件级聚焦, 翻开即展开; 守卫防重复)。
 	if not _options_shown:
@@ -710,24 +746,37 @@ func _claim_marker(m: Marker) -> void:
 	tw.tween_property(m, "scale", Vector2(0.3, 0.3), 0.40)
 	tw.chain().tween_callback(m.queue_free)
 
-## 清空当前因果链(抽新牌 / 离开时; 锚点簇与手牌不动)
-func _clear_chain() -> void:
+## 清空【当前 active 事件链】(批次一拆分: 单事件粒度; 盘面卡背不动)。
+## 触发点: 批次二【继续】卡推进时调(普通事件继续→回盘面 / 包结束); 批次一仅开包防御性调用。
+## 回收范围: 事件卡 + 选项卡 + 结果卡 + 未领取标记(_chain_nodes), 不含 _board_cards。
+func _clear_event_chain() -> void:
 	if _focus_active:
-		_restore_focus()  # 聚焦中抽新牌: 先还原镜头 + 手牌 + 清 UI
+		_restore_focus()  # 聚焦中清场: 先还原镜头 + 手牌 + 清 UI
 	for node in _chain_nodes:
 		if not is_instance_valid(node):
 			continue
-		if node is CardScn:      # Card → despawn(转 discard + 注销镜像)
+		if node is CardScn:      # Card → despawn(前端卡转 discard / 镜像卡仅注销镜像)
 			_despawn_card(node)
 		else:                    # Marker 等非卡 → 裸回收
 			node.queue_free()
 	_chain_nodes.clear()
 	_option_cards.clear()
-	_window_cards.clear()
-	_window_picked = false
 	_options_shown = false
 	_result_shown = false
 	_result_revealed = false
+
+## 清空【整个待办盘面】(批次一拆分: 包结束 / 玩满 C 余牌消散时调; 批次二接线触发)。
+## 回收范围: 盘面卡背(_board_cards), 不含 active 事件链(_chain_nodes 各自由 _clear_event_chain 回收)。
+func _clear_board() -> void:
+	for node in _board_cards:
+		if not is_instance_valid(node):
+			continue
+		if node is CardScn:      # 镜像卡: _despawn_card → _detach 仅注销镜像(前端 store 无)+ 裸回收
+			_despawn_card(node)
+		else:
+			node.queue_free()
+	_board_cards.clear()
+	_board_active = false
 
 ## 牌桌平移(B③#1): 仅空白处的左键拖拽到达此处(卡/标记已消费各自事件)
 ##
