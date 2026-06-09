@@ -67,13 +67,27 @@ func _alloc_uid() -> String:
 ## 新建一张卡实例并放入指定 Zone。
 ## def_ref 传静态 def 共享引用(勿 duplicate);zone_id 必填(维持"恒属一个 Zone"不变量,
 ## 未登记则自动登记为 generic)。返回新建的 CardData。
-func create_card(logical_id: String, kind: int, def_ref: Dictionary = {}, zone_id: String = "", tags: Array = []) -> CardData:
+## uid_override(F1 盲选 uid 采用): 非空时采用该 uid(对齐引擎下发 handQueue uid)而非自动分配,
+##   并推高续号防止后续 create_card 撞号(同 add_existing 防护)。空则自动分配。
+func create_card(logical_id: String, kind: int, def_ref: Dictionary = {}, zone_id: String = "", tags: Array = [], uid_override: String = "") -> CardData:
 	if zone_id.is_empty():
 		push_error("[CardZoneStore] create_card: zone_id 必填(每卡恒属一个 Zone)")
 		return null
 	if not _zones.has(zone_id):
 		register_zone(zone_id)
-	var uid := _alloc_uid()
+	var uid := uid_override if not uid_override.is_empty() else _alloc_uid()
+	if not uid_override.is_empty():
+		# 检重防御(codex P1): uid_override 撞已有卡 → 拒绝, 避免静默覆盖致 zone 成员与 _cards 不一致。
+		# 注: 前端 store 与引擎 store 是同类两实例、uid 同为 cN 空间, 直接采用引擎 uid 必撞;
+		#     uid 对齐的正确实现(手牌卡只镜像引擎 store、不进前端 store)随持久盘面一起落地
+		#     (见 [[事件包交互流程_持久盘面与流程驱动_MVP]] §四)。此处检重作为通用防御保留。
+		if _cards.has(uid):
+			push_error("[CardZoneStore] create_card: uid_override 撞号已存在, 拒绝覆盖: %s" % uid)
+			return null
+		# 采用外部 uid 时推高续号, 避免与未来 _alloc_uid 撞号(同 add_existing 防护逻辑)。
+		var num := _uid_num_of(uid)
+		if num >= _uid_seq:
+			_uid_seq = num + 1
 	var card: CardData = CardDataScn.make(uid, logical_id, kind, def_ref, zone_id, tags)
 	_cards[uid] = card
 	(_zones[zone_id]["members"] as Array).append(uid)

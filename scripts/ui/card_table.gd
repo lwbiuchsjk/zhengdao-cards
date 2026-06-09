@@ -48,6 +48,8 @@ var _panning: bool = false
 const SLOT_DX := 220.0    # 因果链横向间距(事件→选项→结果 始终向右; 卡宽 200 + 间隙)
 var _chain_nodes: Array[Node] = []   # 当前链上的卡, 用于清空
 var _option_cards: Array[Node] = []  # 当前选项卡(选定后清除未选中的)
+var _window_cards: Array[Node] = []  # F1 盲选窗口: 当前摊出的 K 张卡背(盲选后未选中的消散)
+var _window_picked: bool = false     # F1 盲选守卫: 窗口期已选过 → 拒绝重复点(防消散 tween 内重复触发)
 var _chain_origin: Vector2 = Vector2.ZERO
 var _options_shown: bool = false     # 选项已展开守卫(同步置位, 防翻牌 tween 期间重复点击)
 var _result_shown: bool = false
@@ -109,9 +111,13 @@ func _init_card_system() -> void:
 
 ## E0 统一 spawn: store 分配 uid + Zone 归属 → 建 Card 持 model → add_child(触发 _ready, 故
 ## face_up / back 须在此前设)→ register 入镜像。position 由调用方在返回后设(不受 _ready 影响)。
+## uid_override: 预留参数(透传 create_card 检重路径)。F1 暂不使用——前端/引擎双 store 同 cN 空间
+##   会撞号; uid 对齐随持久盘面用"手牌卡只镜像引擎 store"做对(见 [[事件包交互流程_持久盘面与流程驱动_MVP]])。
+##   当前所有卡均走前端自动分配(空 override)。
 func _spawn_card(logical_id: String, kind: int, zone_id: String, parent: Node,
-		title: String = "", body: String = "", face_up: bool = true, back: String = "") -> CardScn:
-	var data: CardData = _zone_store.create_card(logical_id, kind, {}, zone_id)
+		title: String = "", body: String = "", face_up: bool = true, back: String = "",
+		uid_override: String = "") -> CardScn:
+	var data: CardData = _zone_store.create_card(logical_id, kind, {}, zone_id, [], uid_override)
 	var c := CardScn.new()
 	c.model = data
 	c.card_type = kind
@@ -246,30 +252,64 @@ func _build_hand_zone() -> void:
 
 # ---------- 因果链动态槽位(§2.3, 验 B③#5) ----------
 
-## 抽牌起新链: 清空旧链 → 调 _data_source 拿事件 → 生成事件卡(牌背, 点击翻开 + 展开选项)
+## 抽牌起新链(F1 盲选窗口): 清空旧链 → 调 pack_window_for_pile 拿承诺窗口 →
+## 按 mode 摊出 K 张(blind)/ 1 张(single skeleton)卡背, 横排; 每张点击接 _on_hand_pick。
 func _start_chain() -> void:
 	_clear_chain()
 	_chain_origin = Vector2(1010, 620)  # 事件在锚点簇右侧; 选项/结果向右依次展开(始终左→右)
-	var event_info: Dictionary = _data_source.events_for_pile()
-	if not event_info.get("ok", false):
-		push_error("[card_table] events_for_pile failed: %s" % str(event_info.get("error", "")))
+	var window: Dictionary = _data_source.pack_window_for_pile()
+	if not window.get("ok", false):
+		push_error("[card_table] pack_window_for_pile failed: %s" % str(window.get("error", "")))
 		return
-	var title := str(event_info.get("title", ""))
-	var body := str(event_info.get("body", ""))
-	var event_id := str(event_info.get("event_id", ""))  # E0: 事件 logical_id 来自适配器
-	var ev := _spawn_card(event_id, CardScn.CardType.EVENT, ZONE_CHAIN, _upper_zone,
-		title, body, false)
-	ev.position = _chain_origin
-	_chain_nodes.append(ev)
-	ev.clicked.connect(func(c: CardScn) -> void: _on_event_clicked(c))
+	var cards: Array = window.get("cards", [])
+	if cards.is_empty():
+		push_error("[card_table] pack_window_for_pile 返回空窗口")
+		return
+	_window_cards.clear()
+	_window_picked = false
+	for i in cards.size():
+		var cd: Dictionary = cards[i]
+		var uid := str(cd.get("uid", ""))          # blind: 引擎 handQueue uid; single(skeleton): 空串
+		var event_id := str(cd.get("event_id", "")) # 卡背 logical_id(盲选时玩家不可见, 翻开才显文字)
+		# 摊卡背: face_up=false, title/body 留空(盲选), 翻开后由 pick_hand 返回填入。
+		# uid 采用(前端卡 uid == 引擎 uid)F1 暂不做: 前端/引擎双 store 同 cN 空间会撞号, 且 pick 用闭包
+		# pick_uid 直传引擎 uid、不依赖前端卡 uid。正确实现(手牌卡只镜像引擎 store)随持久盘面落地
+		# (见 [[事件包交互流程_持久盘面与流程驱动_MVP]] §四)。故此处前端自分配 uid。
+		var back := _spawn_card(event_id, CardScn.CardType.EVENT, ZONE_CHAIN, _upper_zone,
+			"", "", false, "")
+		back.position = Vector2(_chain_origin.x + i * SLOT_DX, _chain_origin.y)  # 横排, 复用因果链偏移
+		_chain_nodes.append(back)
+		_window_cards.append(back)
+		# 闭包按值捕获引擎下发的 uid + 节点(blind 传 uid / single 传空串给 pick_hand)。
+		var pick_uid := uid
+		back.clicked.connect(func(c: CardScn) -> void: _on_hand_pick(c, pick_uid))
 
-## 事件卡点击: 首次翻开并展开选项(同步守卫, 防翻牌 tween 期间重复点击重复展开)
-func _on_event_clicked(ev: CardScn) -> void:
-	if _options_shown:
+## 盲选一张手牌(F1): 调 pick_hand → 选中翻开为真实事件 + 余背消散 → 接事件流程(展开选项)。
+## 同步守卫 _window_picked 防消散 tween 期间重复点击。
+func _on_hand_pick(chosen: CardScn, pick_uid: String) -> void:
+	if _window_picked:
 		return
-	_options_shown = true
-	ev.flip_to(true)
-	_expand_options()
+	_window_picked = true
+	var event_info: Dictionary = _data_source.pick_hand(pick_uid)
+	if not event_info.get("ok", false):
+		push_error("[card_table] pick_hand failed: %s" % str(event_info.get("error", "")))
+		_window_picked = false  # 失败放守卫, 允许重试(异常恢复)
+		return
+	# 余背消散(_fade_and_free 会从 _chain_nodes 摘除 + 转 discard + 淡出回收)。
+	for w in _window_cards:
+		if w != chosen and is_instance_valid(w):
+			_fade_and_free(w)
+	_window_cards.clear()
+	# 选中卡: 填真实事件文字 → 归位到事件槽(若非首位) → 翻开 → 展开选项。
+	chosen.set_face_text(str(event_info.get("title", "")), str(event_info.get("body", "")))
+	if chosen.position != _chain_origin:
+		var tw := chosen.create_tween()
+		tw.tween_property(chosen, "position", _chain_origin, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	chosen.flip_to(true)
+	# 接事件流程: 展开选项(F1 不含 F3 事件级聚焦, 翻开即展开; 守卫防重复)。
+	if not _options_shown:
+		_options_shown = true
+		_expand_options()
 
 ## 展开选项: 调 _data_source 拿选项数据 (≤3, 水平排在事件右侧; 纯代码偏移 → 均匀无重叠)
 func _expand_options() -> void:
@@ -683,6 +723,8 @@ func _clear_chain() -> void:
 			node.queue_free()
 	_chain_nodes.clear()
 	_option_cards.clear()
+	_window_cards.clear()
+	_window_picked = false
 	_options_shown = false
 	_result_shown = false
 	_result_revealed = false

@@ -66,6 +66,25 @@ func events_for_pile() -> Dictionary:
 	}
 
 
+# 功能: 摊承诺窗口 (F1, 与 EngineDataSource 同形)。
+# mock 无盲选窗口语义 → 单事件包成 window-of-1 (mode=single), card_table 走单张卡背路径。
+func pack_window_for_pile() -> Dictionary:
+	return {
+		"ok": true,
+		"mode": "single",
+		"cards": [{
+			"uid": "",
+			"event_id": MOCK_EVENT["event_id"],
+			"title": MOCK_EVENT["title"],
+		}],
+	}
+
+
+# 功能: 盲选一张 (F1, 与 EngineDataSource 同形)。mock 恒返回同一事件 (uid 参数忽略)。
+func pick_hand(_card_uid: String) -> Dictionary:
+	return events_for_pile()
+
+
 # 功能: 取当前事件的选项 (mock 路径恒返回 3 个固定选项)。
 func options_for_event() -> Array:
 	var out: Array = []

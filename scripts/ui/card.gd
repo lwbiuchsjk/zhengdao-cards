@@ -180,6 +180,16 @@ func set_selected(on: bool) -> void:
 	_selected = on
 	queue_redraw()
 
+## 运行时更新正面文字(F1 盲选: 卡背翻开为真实承诺事件时填入 title/body)。
+## 标签在 _ready 一次性建, 故除写 export 值外须同步刷新已建标签节点。
+func set_face_text(new_title: String, new_body: String) -> void:
+	title_text = new_title
+	body_text = new_body
+	if _title_label != null:
+		_title_label.text = new_title
+	if _body_label != null:
+		_body_label.text = new_body
+
 ## 按当前 _face_up 刷新卡面绘制 + 文字显隐
 func _refresh_face() -> void:
 	_type_label.visible = _face_up
