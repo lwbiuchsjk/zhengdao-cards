@@ -21,7 +21,7 @@ class_name CardData
 ## (静态 def 属共享数据,按 `logical_id` 在加载后由注册表重新挂接,避免每实例冗余拷贝)。
 
 # 卡牌逻辑类别(规范枚举)。与视图层 Card.CardType 取值对齐,视图由本枚举派生。
-enum CardKind { EVENT, OPTION, RESULT, RESOURCE, LOCATION, DECK, LEAVE }
+enum CardKind { EVENT, OPTION, RESULT, RESOURCE, LOCATION, DECK, LEAVE, CONTINUE }
 
 # ---- 原语①: 稳定实例身份 ----
 var card_uid: String = ""          # 全局唯一实例 id(由注册表 / world_state 工厂分配,本类不自生成)

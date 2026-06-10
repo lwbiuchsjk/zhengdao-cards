@@ -8,8 +8,8 @@ extends Node2D
 ## - 卡牌以原点为中心绘制(-SIZE/2 ~ +SIZE/2), 故 hover 放大 / 翻牌缩放均绕中心。
 ## - hover/click 经 Area2D 拾取(需 viewport.physics_object_picking = true, 由牌桌根开启)。
 
-# 卡牌类型(决定卡框色 + 类型标识占位)
-enum CardType { EVENT, OPTION, RESULT, RESOURCE, LOCATION, DECK, LEAVE }
+# 卡牌类型(决定卡框色 + 类型标识占位)。CONTINUE = 批次二【继续】卡(前端 UI 推进卡, 非游戏实体)。
+enum CardType { EVENT, OPTION, RESULT, RESOURCE, LOCATION, DECK, LEAVE, CONTINUE }
 # 卡牌状态机(§1.1): 牌背/牌面/默认/hover/选中/禁用/聚焦/已投
 enum State { FACE_DOWN, FACE_UP, HOVER, SELECTED, DISABLED, FOCUSED, SPENT }
 
@@ -26,10 +26,12 @@ const TYPE_COLORS: Dictionary = {
 	CardType.LOCATION: Color("4a7070"),
 	CardType.DECK: Color("383848"),
 	CardType.LEAVE: Color("6a4a4a"),
+	CardType.CONTINUE: Color("5a6a4a"),
 }
 const TYPE_LABELS: Dictionary = {
 	CardType.EVENT: "事件", CardType.OPTION: "选项", CardType.RESULT: "结果",
 	CardType.RESOURCE: "资源", CardType.LOCATION: "地点", CardType.DECK: "牌库", CardType.LEAVE: "离去",
+	CardType.CONTINUE: "继续",
 }
 
 signal clicked(card: Card)

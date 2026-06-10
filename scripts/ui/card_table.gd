@@ -277,16 +277,24 @@ func _open_pack() -> void:
 		push_error("[card_table] pack_window_for_pile 返回空窗口")
 		return
 	_location_locked = true   # 开包即锁(F2)
+	_populate_board(window)
+
+## 摊出待办盘面(批次二抽出, 开包 + 玩满 C 骨架登场 + 自省终点共用): 按 window.mode spawn 卡背横排,
+## 接 _on_board_pick, 复位 _board_active。blind = K 张镜像引擎 store(DD1); single = 1 张前端自分配
+## (skeleton / sys_reflection, uid 空, pick 走 stash)。调用前盘面须已清(_open_pack 锁后调 / 继续时
+## _clear_board 后调)。
+func _populate_board(window: Dictionary) -> void:
+	var cards: Array = window.get("cards", [])
+	var mode := str(window.get("mode", ""))
 	_board_cards.clear()
 	_board_active = false
-	var mode := str(window.get("mode", ""))
 	for i in cards.size():
 		var cd: Dictionary = cards[i]
-		var uid := str(cd.get("uid", ""))          # blind: 引擎 handQueue uid; single(skeleton): 空串
+		var uid := str(cd.get("uid", ""))          # blind: 引擎 handQueue uid; single: 空串
 		var event_id := str(cd.get("event_id", "")) # 卡背 logical_id(盲选时不可见, 翻开才显文字)
 		# DD1 镜像派: blind 卡背是引擎预抽的 handQueue 实例 → 镜像引擎 store(前端卡 uid == 引擎 uid,
-		# 不进前端 _zone_store, 杜绝双 store 撞号)。single(skeleton, uid 空)无引擎 handQueue 实例 →
-		# 退前端自分配(批次二骨架登场再统一; pick 走 stash, uid 空闭包)。
+		# 不进前端 _zone_store, 杜绝双 store 撞号)。single(uid 空, skeleton/自省)无引擎 handQueue 实例
+		# → 退前端自分配; pick 走 pack_window 暂存的 stash(uid 空闭包)。
 		var back: CardScn
 		if mode == "blind" and not uid.is_empty():
 			back = _spawn_mirror_card(uid, event_id, _upper_zone)
@@ -335,7 +343,8 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 		return
 	# 持久盘面: 余背【不消散、留桌】; 仅把选中卡从盘面摘出、转入 active 事件链。
 	_board_cards.erase(chosen)
-	_chain_nodes.append(chosen)   # 计入事件链 → 批次二继续清场时随链回收(非盘面回收)
+	_chain_nodes.append(chosen)   # 计入事件链 → 继续清场时随链回收(非盘面回收)
+	_relayout_board()             # DD-B2: 其后余背向前补齐, 平滑滑动填空洞(与选中卡飞出同时)
 	# 选中卡: 填真实事件文字 → 飞到因果链起点 → 翻开 → 展开选项。
 	chosen.set_face_text(str(event_info.get("title", "")), str(event_info.get("body", "")))
 	if chosen.position != _chain_origin:
@@ -346,6 +355,19 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 	if not _options_shown:
 		_options_shown = true
 		_expand_options()
+
+## 余背向前补齐(DD-B2): 剩余盘面卡按新序号紧凑左对齐, 平滑滑动填被选走的空洞。
+## 被选走位置之前的卡序号不变 → 目标位 == 现位 → 跳过(无谓 tween); 之后的卡向前滑一格。
+func _relayout_board() -> void:
+	for i in _board_cards.size():
+		var node: Node2D = _board_cards[i]
+		if not is_instance_valid(node):
+			continue
+		var target := Vector2(_board_origin.x + i * BOARD_DX, _board_origin.y)
+		if node.position.is_equal_approx(target):
+			continue  # 已在位(空洞之前的卡) → 不动
+		var tw := node.create_tween()
+		tw.tween_property(node, "position", target, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
 ## 展开选项: 调 _data_source 拿选项数据 (≤3, 水平排在事件右侧; 纯代码偏移 → 均匀无重叠)
 func _expand_options() -> void:
@@ -692,6 +714,7 @@ func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
 	if not is_instance_valid(card):
 		return
 	_spawn_claimable_markers(card, outcome)
+	_spawn_continue_card()  # F4: 结果揭示后出现【继续】卡(DD-B1: 领取可选, 不强制领完)
 
 ## 在结果卡旁生成可领取标记(实体 + 经验成长); 放世界(UpperZone), 与结果卡相对位置固定、随镜头一起动
 ## Line B S8.4: dir 字段处理 —— gain 走可领取通道; loss 暂走 print 提示(已扣除展示由后续 playtest 决议视觉)。
@@ -746,9 +769,62 @@ func _claim_marker(m: Marker) -> void:
 	tw.tween_property(m, "scale", Vector2(0.3, 0.3), 0.40)
 	tw.chain().tween_callback(m.queue_free)
 
-## 清空【当前 active 事件链】(批次一拆分: 单事件粒度; 盘面卡背不动)。
-## 触发点: 批次二【继续】卡推进时调(普通事件继续→回盘面 / 包结束); 批次一仅开包防御性调用。
-## 回收范围: 事件卡 + 选项卡 + 结果卡 + 未领取标记(_chain_nodes), 不含 _board_cards。
+## F4【继续】卡(批次二): 结果揭示后出现, 排结果卡右侧。点击 = 推进(_on_continue)。
+## 复用前端自分配卡(ZONE_CHAIN, CONTINUE 类型), 随事件链由 _clear_event_chain 回收。
+func _spawn_continue_card() -> void:
+	var cont := _spawn_card("continue", CardScn.CardType.CONTINUE, ZONE_CHAIN, _upper_zone,
+		"继续", "推进。", true)
+	cont.position = Vector2(_chain_origin.x + SLOT_DX * 3.0, _chain_origin.y)  # 结果卡(SLOT_DX*2)右侧
+	_chain_nodes.append(cont)
+	cont.clicked.connect(func(_c: CardScn) -> void: _on_continue())
+
+## F4 推进(批次二, 持久盘面统一推进入口): 清当前事件链 → 重对账 pack_window_for_pile → 按 mode 三分支。
+## 实测信号(2026-06-09 探针): blind=仍普通容量(回盘面) / single=玩满 C 骨架登场 或 包结束自省。
+## 骨架与自省走同一 single 通道, pick 后 has_choice 自然分流(骨架有选项→事件流程; 自省 0 选项→停住=终点)。
+func _on_continue() -> void:
+	_clear_event_chain()
+	var window: Dictionary = _data_source.pack_window_for_pile()
+	if not window.get("ok", false):
+		# 包结束 / 世界终止: 无更多事件可推进 → 流程停住(MVP 单程自然终点, 不再开下一包)。
+		push_warning("[card_table] 继续: pack_window 无更多事件 → 终点 (%s)" % str(window.get("error", "")))
+		return
+	var mode := str(window.get("mode", ""))
+	if mode == "blind":
+		# 回持久盘面: 余背 pick 时已向前补齐、紧凑在桌, 仅解除 active 守卫 → 可盲选下一张。
+		# 对账(调试): 返回的剩余 handQueue uid 集合应与现存盘面镜像卡一致。
+		_debug_assert_board_sync(window)
+		_board_active = false
+	else:
+		# single: 玩满 C(骨架)或包结束(自省)。§四.3 余牌须消散且不可点(防误触 forced 打乱末位调度) →
+		# _clear_board 物理回收余背节点; 再摊出 1 张卡背(骨架/自省同通道)。
+		_clear_board()
+		_populate_board(window)
+
+## 盘面 ↔ 引擎 handQueue 对账(调试断言): 继续回盘面时, pack_window 返回的剩余 uid 集合
+## 应与现存盘面镜像卡的 uid 集合一致(持久盘面不重摊, 仅复用既有节点)。不一致只告警, 不中断。
+func _debug_assert_board_sync(window: Dictionary) -> void:
+	var win_uids: Dictionary = {}
+	for c_v in window.get("cards", []):
+		var u := str((c_v as Dictionary).get("uid", ""))
+		if not u.is_empty():
+			win_uids[u] = true
+	var board_uids: Dictionary = {}
+	for node in _board_cards:
+		if not is_instance_valid(node):
+			continue
+		var model: CardData = node.get("model")
+		if model != null and not model.card_uid.is_empty():
+			board_uids[model.card_uid] = true
+	if win_uids.size() != board_uids.size():
+		push_warning("[card_table] 盘面对账不一致: 引擎余 %d 张, 前端盘面 %d 张" % [win_uids.size(), board_uids.size()])
+		return
+	for u in win_uids:
+		if not board_uids.has(u):
+			push_warning("[card_table] 盘面对账缺 uid=%s (引擎有、前端盘面无)" % u)
+
+## 清空【当前 active 事件链】(单事件粒度; 盘面卡背不动)。
+## 触发点: 【继续】卡推进时调(_on_continue, 普通→回盘面 / single→骨架·自省前先清当前链); 开包防御性调用。
+## 回收范围: 事件卡 + 选项卡 + 结果卡 + 【继续】卡 + 未领取标记(_chain_nodes), 不含 _board_cards。
 func _clear_event_chain() -> void:
 	if _focus_active:
 		_restore_focus()  # 聚焦中清场: 先还原镜头 + 手牌 + 清 UI
