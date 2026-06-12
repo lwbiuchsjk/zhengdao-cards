@@ -54,6 +54,11 @@ var _selected: bool = false  # 聚焦选中态(卡面高亮边框)
 var _base_scale: Vector2 = Vector2.ONE
 var _flip_tween: Tween
 var _scale_tween: Tween
+# 收起态 hover 上移(手牌聚焦收起后, hover 这张卡上移 _hover_lift 让卡身完整回屏内; 由 card_table 设)。
+var _hover_lift: float = 0.0
+var _lift_tween: Tween
+var _lift_applied: bool = false   # 当前是否处于 hover 上移态(避免重复/漏还原)
+var _pre_lift_y: float = 0.0      # 上移前的 y(unhover 还原目标)
 var _title_label: Label
 var _body_label: Label
 var _type_label: Label
@@ -208,6 +213,11 @@ func _on_mouse_entered() -> void:
 	_hovered = true
 	z_index = 10  # 抬升避免被邻卡遮挡
 	_animate_scale(_base_scale * HOVER_SCALE)
+	# 收起态: hover 上移 _hover_lift, 让卡身完整回屏内(从当前收起位起算, unhover 还原)。
+	if _hover_lift > 0.0 and not _lift_applied:
+		_lift_applied = true
+		_pre_lift_y = position.y
+		_animate_lift(_pre_lift_y - _hover_lift)
 
 func _on_mouse_exited() -> void:
 	if _state == State.DISABLED:
@@ -215,6 +225,16 @@ func _on_mouse_exited() -> void:
 	_hovered = false
 	z_index = 0
 	_animate_scale(_base_scale)
+	if _lift_applied:
+		_lift_applied = false
+		_animate_lift(_pre_lift_y)  # 落回收起位
+
+## 设置收起态 hover 上移量(由 card_table 在收起/还原手牌时调; 0 = 不上移)。
+## 还原时若正处于上移态, 只清状态标志 —— position 由 card_table 的归位 tween 接管。
+func set_hover_lift(amount: float) -> void:
+	_hover_lift = amount
+	if amount == 0.0:
+		_lift_applied = false
 
 ## hover 放大 / 复位的平滑缩放; 翻牌进行中不抢 scale(P2-4)
 func _animate_scale(to: Vector2) -> void:
@@ -225,6 +245,14 @@ func _animate_scale(to: Vector2) -> void:
 	_scale_tween = create_tween()
 	_scale_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_scale_tween.tween_property(self, "scale", to, 0.12)
+
+## hover 上移 / 落回的平滑位移(仅动 y; 独立 tween, 不与 card_table 的位移 tween 共用句柄)
+func _animate_lift(target_y: float) -> void:
+	if _lift_tween and _lift_tween.is_running():
+		_lift_tween.kill()
+	_lift_tween = create_tween()
+	_lift_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_lift_tween.tween_property(self, "position:y", target_y, 0.12)
 
 ## Area2D 输入: 左键按下 = 点击(消费事件, 不触发牌桌平移); 同时通知牌桌"按下落在卡上"(聚焦取消判定)
 func _on_area_input(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:

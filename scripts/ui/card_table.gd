@@ -62,6 +62,9 @@ var _hand_home: Dictionary = {}      # res_type -> 手牌 home 屏幕坐标(聚�
 # ---- 聚焦状态机(§2.9 F: 总览/挂起 → L1 事件焦点 → L2 选项焦点 → 结果态) ----
 # 三状态律: ① 点任一因果链卡=聚焦它 ② 拍桌空白=解除回总览(事件挂起非退出) ③ 确定不解除、继续才解除。
 const FOCUS_ZOOM := Vector2(1.6, 1.6)   # 聚焦放大倍率(手感, 可调; 精调留 UE pass)
+const HAND_COLLAPSE_DY := 150.0                 # 聚焦时手牌统一下移量(收起; = hover 上移量, 回 home 完整显示)
+const HAND_DIM_COLOR := Color(0.45, 0.45, 0.45, 1.0)  # 非白名单收起压暗(降亮度·不透明; modulate 乘色, 对美术友好)
+                                                #   白名单保持 Color.WHITE(不压暗, 凸显可投)。不用 alpha(会变半透明看穿)
 var _event_card: CardScn = null         # F3: 当前 active 事件卡(L1 聚焦目标 + 总览挂起态点它重聚焦入口)
 var _sealed: bool = false               # F5 封缄态: 确定后置位, 此后选项/事件不可再聚焦改选
 var _focus_active: bool = false         # L2: 选项级聚焦中(可投入/确定); L1 与总览均为 false
@@ -360,9 +363,10 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 		tw.tween_property(chosen, "position", _chain_origin, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	chosen.flip_to(true)
 	_event_card = chosen          # F3: 记 active 事件卡(L1 聚焦目标 + 重聚焦入口; chosen.clicked 已连 _on_board_pick)
-	# F3 L1 事件级聚焦: 镜头聚焦事件卡 → 再展开选项(§2.9 F: 总览 → L1)。
-	# 传 _chain_origin(事件卡飞行终点)而非读飞行中 global_position(codex P2)。
-	_focus_camera_on(_chain_origin)
+	# F3 L1 事件级聚焦: 镜头聚焦【因果链区域】(非具体卡 — 事件/选项/结局/继续同处一区, 触发即固定;
+	# 此后点各卡不再移镜头)+ 收起手牌(空白名单 → 全收起+全压暗) → 再展开选项(§2.9 F: 总览 → L1)。
+	_focus_camera_on(_focus_region_center())
+	_apply_hand_focus([])   # L1: 还没选选项, 无白名单 → 所有手牌收起+压暗
 	if not _options_shown:
 		_options_shown = true
 		_expand_options()
@@ -434,6 +438,11 @@ func _commit_option(chosen: CardScn) -> void:
 
 # ---------- 聚焦状态机公共原语(§2.9 F) ----------
 
+## 事件聚焦【区域】中心(point 1): 框住 事件→选项→结局→继续 整条因果链(slot 0~3 中点 = slot 1.5)。
+## 聚焦指向此固定区域而非具体卡 —— 事件触发即锁定, 选项/结局/继续出现不改镜头, 点各卡只触发选中/点击效果。
+func _focus_region_center() -> Vector2:
+	return _chain_origin + Vector2(SLOT_DX * 1.5, 0.0)
+
 ## 聚焦到某世界坐标(F3 通用子函数, L1 事件级 / L2 选项级 / 重聚焦 共用):
 ## 传目标世界坐标(非读节点 global_position — 避免目标卡仍在飞行中 tween 时取到旧位, codex P2)。
 ## 入口先 kill 待定的还原 tween(防其 chained callback 误清 _pre_focus_saved, codex P1)。
@@ -451,10 +460,26 @@ func _focus_camera_on(world_pos: Vector2) -> void:
 	cam_tw.tween_property(_camera, "position", world_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	cam_tw.tween_property(_camera, "zoom", FOCUS_ZOOM, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
-## 仅平移镜头到世界坐标(保持当前 zoom): 封缄后呈现结果卡用(§2.9 F: 结果态仍聚焦)。
-func _pan_camera_to(world_pos: Vector2) -> void:
+## 继续后摇镜头指向剩余盘面卡(point 2): 平移到盘面卡中心 + 还原总览 zoom(从事件区 zoom-out 移向盘面),
+## 引导玩家"还有待办事件, 继续盲选"。回盘面(剩余多张)/ 骨架·自省登场(单张新卡)同此 —— 指向那批新卡。
+func _camera_to_board() -> void:
+	var sum := Vector2.ZERO
+	var n := 0
+	for node in _board_cards:
+		if is_instance_valid(node):
+			sum += (node as Node2D).position
+			n += 1
+	if n == 0:
+		return
+	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
+		_restore_cam_tween.kill()
+	_restore_cam_tween = null
+	var center: Vector2 = sum / float(n)
+	# 两步串行(默认非并行): 先 zoom out 还原总览缩放(位置不动, 仍在事件区), 再平移指向未展开的盘面卡。
 	var tw := _camera.create_tween()
-	tw.tween_property(_camera, "position", world_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_camera, "zoom", _pre_focus_cam_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_camera, "position", center, 0.40).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_restore_cam_tween = tw   # 存句柄(F1): 摇镜头途中玩家盲选下一张 → _focus_camera_on 会 kill 它, 防双镜头 tween 抢镜
 
 ## 重聚焦事件卡(§2.9 F: 总览挂起态/L1 点事件卡 → L1; 若当前在 L2 则先退选项回 L1, 镜头转事件不回总览)。
 func _refocus_event() -> void:
@@ -463,20 +488,26 @@ func _refocus_event() -> void:
 	if _focus_active:
 		_flyback_invested_markers()   # L2 → L1: 未确定的投入飞回(可逆)
 		_clear_option_focus_ui()
-	_focus_camera_on(_chain_origin)   # 事件卡恒在 _chain_origin(已落位)
+	_focus_camera_on(_focus_region_center())   # 重聚焦【区域】(非具体卡; point 1)
+	_apply_hand_focus([])             # L1: 手牌保持收起、改全压暗(L2→L1 不升起再收, 仅改亮度)
 
-## 清选项级(L2)UI: 取消选中 + 释放确定按钮/难度 + 手牌归位 + 复位 L2 标志。不动镜头、不飞回标记
-## (飞回/消耗由调用方按场景决定: 切换/取消飞回, 确定消耗)。
-func _clear_option_focus_ui() -> void:
+## 手牌全部归位总览态: 升回 home + 原大小 + 全亮 + 清 hover 上移量。仅解除聚焦回总览时调
+## (L2→L1 重聚焦不调 —— 那里手牌保持收起、仅改压暗)。
+func _restore_hand_home() -> void:
 	for key in _hand_cards:
 		var rt: String = key
 		var card: Node2D = _hand_cards[rt]
 		var home: Vector2 = _hand_home[rt]
+		card.set_hover_lift(0.0)   # 清收起态 hover 上移
 		var tw := card.create_tween()
 		tw.set_parallel(true)
 		tw.tween_property(card, "position", home, 0.25)
 		tw.tween_property(card, "scale", Vector2.ONE, 0.25)
-		tw.tween_property(card, "modulate:a", 1.0, 0.25)
+		tw.tween_property(card, "modulate", Color.WHITE, 0.25)  # 复原亮度(对应压暗的 modulate)
+
+## 清选项级(L2)UI: 取消选中 + 释放确定按钮/难度 + 复位 L2 标志。不动手牌位置(由调用方决定归位/重收起)、
+## 不动镜头、不飞回标记(飞回/消耗由调用方按场景决定: 切换/取消飞回, 确定消耗)。
+func _clear_option_focus_ui() -> void:
 	if _focused_option != null and is_instance_valid(_focused_option):
 		_focused_option.set_selected(false)
 	if _confirm_btn != null and is_instance_valid(_confirm_btn):
@@ -507,31 +538,31 @@ func _enter_focus(option: CardScn, option_id: String, opt_type: int, whitelist: 
 	_focus_whitelist = whitelist
 	_focus_threshold = threshold
 	option.set_selected(true)
-	_focus_camera_on(option.global_position)   # L2: 镜头收紧到选项(选项已落位, global_position 即终点)
+	# point 1: 选项聚焦【不移镜头】(区域固定)。仅当从总览(挂起)直接点选项进入(未在聚焦态)才先聚焦区域;
+	# 已在 L1/L2 内点选项/切换选项 → 镜头不动, 只换选中高亮 + 手牌白名单。
+	if not _pre_focus_saved:
+		_focus_camera_on(_focus_region_center())
 	_apply_hand_focus(whitelist)
 	_update_difficulty(opt_type, threshold)
 	if _confirm_btn == null:
 		_build_confirm_button()
 
-## 手牌响应: 非白名单收起(下沉+缩小+变暗); 白名单维持原位(靠 zoom + 他卡收起已足够凸显)。
-## 直接型(空白名单) → 任何 rt 均不在白名单 → 所有手牌都收起。
+## 手牌聚焦响应(L1 事件级 / L2 选项级 统一收起): **所有手牌一律下移**(统一姿态, 不缩小)。
+## 仅用【压暗】区分白名单: 白名单卡保持高亮(凸显可投), 非白名单压暗。L1 传空白名单 → 全收起+全压暗。
+## 下移后卡身多半滑出屏底, 故给每张设 hover 上移量(= 下移量)→ hover 时回 home 完整显示(见 card.gd)。
 func _apply_hand_focus(whitelist: Array) -> void:
 	for key in _hand_cards:
 		var rt: String = key
 		var card: Node2D = _hand_cards[rt]
 		var home: Vector2 = _hand_home[rt]
-		var to_pos: Vector2 = home
-		var to_scale: Vector2 = Vector2.ONE
-		var to_alpha: float = 1.0
-		if not (rt in whitelist):  # 非白名单(含 DIRECT 全部) → 收起
-			to_pos = home + Vector2(0, 150)
-			to_scale = Vector2(0.7, 0.7)
-			to_alpha = 0.4
+		var to_pos: Vector2 = home + Vector2(0, HAND_COLLAPSE_DY)  # 所有手牌统一下移
+		var to_color: Color = Color.WHITE if (rt in whitelist) else HAND_DIM_COLOR  # 仅压暗(降亮度)区分白名单
 		var tw := card.create_tween()
 		tw.set_parallel(true)
 		tw.tween_property(card, "position", to_pos, 0.25)
-		tw.tween_property(card, "scale", to_scale, 0.25)
-		tw.tween_property(card, "modulate:a", to_alpha, 0.25)
+		tw.tween_property(card, "modulate", to_color, 0.25)  # 压暗 = modulate 乘色降亮度(非 alpha, 不透明)
+		# scale 保持原大小(不缩小); 收起态 hover 上移 HAND_COLLAPSE_DY → 回 home 完整可见。
+		card.set_hover_lift(HAND_COLLAPSE_DY)
 
 ## 难度提示(鉴定型): 顶部居中显示需投入标记数; 直接型无
 func _update_difficulty(opt_type: int, threshold: int) -> void:
@@ -604,13 +635,14 @@ func _confirm_focus() -> void:
 			m.queue_free()
 	_invested_markers.clear()
 	_sealed = true
-	_clear_option_focus_ui()   # 退 L2 UI(确定按钮/难度/手牌归位/取消选中), 镜头保持聚焦态(不还原总览)
+	_clear_option_focus_ui()   # 退 L2 UI(确定按钮/难度/取消选中), 镜头保持聚焦态; 手牌保持收起(到点继续才归位)
 	if is_instance_valid(option):
 		_commit_option(option)
-		_expand_result(option_id, opt_type, tier)  # 内部 _pan_camera_to 结果卡(仍聚焦)
+		_expand_result(option_id, opt_type, tier)  # 结果卡落在固定区域内, 不移镜头(point 1)
 
-## 解除聚焦回总览(§2.9 F: 拍桌空白 / 点继续 触发): 投入标记飞回 → 镜头还原总览 → 退 L2 UI。
+## 解除聚焦回总览(§2.9 F: 拍桌空白触发): 投入标记飞回 → 镜头还原总览 pos+zoom → 手牌归位 → 退 L2 UI。
 ## 事件状态保留(挂起, 非退出); pre_focus 还原 tween 完成后才清标志(中途再聚焦仍用原总览镜头)。
+## (点继续 = 事件结束, 走 _clear_event_chain → _focus_teardown_snap + _camera_to_board, 镜头去盘面而非原总览。)
 func _unfocus_to_overview() -> void:
 	_flyback_invested_markers()
 	if _pre_focus_saved:
@@ -620,6 +652,18 @@ func _unfocus_to_overview() -> void:
 		cam_tw.tween_property(_camera, "zoom", _pre_focus_cam_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 		cam_tw.chain().tween_callback(func() -> void: _pre_focus_saved = false)
 		_restore_cam_tween = cam_tw   # 存句柄: 还原途中若重聚焦, _focus_camera_on 会 kill 它(防 callback 误清标志)
+	_restore_hand_home()   # 手牌升回 home + 全亮 + 清 hover 上移(总览态)
+	_clear_option_focus_ui()
+
+## 拆解聚焦【不移镜头】(事件结束/点继续用; 镜头去向由调用方决定 — _on_continue 接 _camera_to_board 去盘面):
+## 投入标记飞回 → kill 待定还原 tween + 即时清聚焦标志 → 手牌归位 → 退 L2 UI。
+func _focus_teardown_snap() -> void:
+	_flyback_invested_markers()
+	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
+		_restore_cam_tween.kill()
+	_restore_cam_tween = null
+	_pre_focus_saved = false
+	_restore_hand_home()
 	_clear_option_focus_ui()
 
 ## 卡/标记在 picking 阶段(_unhandled 之后)通知本表"本次按下落在卡上";
@@ -746,8 +790,7 @@ func _expand_result(option_id: String, opt_type: int, tier: String) -> void:
 	res.position = Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y)  # 结果在选中选项右侧
 	_chain_nodes.append(res)
 	res.clicked.connect(func(c: CardScn) -> void: _reveal_result(c, outcome))
-	# §2.9 F 结果态: 仍聚焦, 镜头平移呈现结果(选中选项与结果之间, 兼顾两者); 解除留到点继续。
-	_pan_camera_to(Vector2(_chain_origin.x + SLOT_DX * 1.5, _chain_origin.y))
+	# point 1: 结果卡出现【不移镜头】—— 它本就落在固定区域内(区域已框住 事件→结局→继续), 镜头不动。
 
 ## 揭示结果(§3): 封缄 → 屏息 → 翻牌 → 显式档位 → 生成可领取标记
 func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
@@ -847,6 +890,7 @@ func _on_continue() -> void:
 		# _clear_board 物理回收余背节点; 再摊出 1 张卡背(骨架/自省同通道)。
 		_clear_board()
 		_populate_board(window)
+	_camera_to_board()   # point 2: 摇镜头指向剩余盘面(回盘面)/ 新登场骨架·自省卡, 引导继续
 
 ## 盘面 ↔ 引擎 handQueue 对账(调试断言): 继续回盘面时, pack_window 返回的剩余 uid 集合
 ## 应与现存盘面镜像卡的 uid 集合一致(持久盘面不重摊, 仅复用既有节点)。不一致只告警, 不中断。
@@ -874,9 +918,8 @@ func _debug_assert_board_sync(window: Dictionary) -> void:
 ## 触发点: 【继续】卡推进时调(_on_continue, 普通→回盘面 / single→骨架·自省前先清当前链); 开包防御性调用。
 ## 回收范围: 事件卡 + 选项卡 + 结果卡 + 【继续】卡 + 未领取标记(_chain_nodes), 不含 _board_cards。
 func _clear_event_chain() -> void:
-	# §2.9 F「点继续 → 解除聚焦回总览」: 事件结束清场前先解除聚焦(L1/L2/结果态/封缄态均还原镜头)。
-	if _pre_focus_saved:
-		_unfocus_to_overview()
+	# 事件结束清场前先拆解聚焦【不移镜头】(L1/L2/结果态/封缄态均拆): 镜头去向交 _on_continue(摇向盘面, point 2)。
+	_focus_teardown_snap()
 	for node in _chain_nodes:
 		if not is_instance_valid(node):
 			continue
