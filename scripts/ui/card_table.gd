@@ -61,7 +61,15 @@ var _hand_cards: Dictionary = {}     # res_type -> 手牌资源卡(标记领取�
 var _hand_home: Dictionary = {}      # res_type -> 手牌 home 屏幕坐标(聚焦后归位)
 # ---- 聚焦状态机(§2.9 F: 总览/挂起 → L1 事件焦点 → L2 选项焦点 → 结果态) ----
 # 三状态律: ① 点任一因果链卡=聚焦它 ② 拍桌空白=解除回总览(事件挂起非退出) ③ 确定不解除、继续才解除。
-const FOCUS_ZOOM := Vector2(1.6, 1.6)   # 聚焦放大倍率(手感, 可调; 精调留 UE pass)
+const FOCUS_ZOOM := Vector2(1.6, 1.6)   # 聚焦放大【上限】(动态取景 zoom 上界, 防单卡怼脸)
+# UE pass(借鉴 Voidmatrix「2D 摄像机」包围矩形动态取景): 聚焦不再用固定点+固定 zoom, 而是框住
+# 整个事件区(事件卡+全部选项卡)并按内容适配缩放; 上界 FOCUS_ZOOM、下界 MIN_FOCUS_ZOOM。
+const MIN_FOCUS_ZOOM := 0.7             # 取景缩放下界(内容很宽时允许拉远到此, 仍能框全)
+const FRAME_PAD := 70.0                 # 包围盒四周留白(世界像素)
+# UE pass(借鉴 Voidmatrix exp 衰减震动): 高光时刻(大成功/大失败揭示)抖屏, 强度自然指数衰减。
+const SHAKE_DECAY := 9.0                # 震动 exp 衰减系数(越大衰减越快)
+const SHAKE_AMP_BIG := 16.0            # 大成功/大失败震幅(世界像素)
+const SHAKE_AMP_SMALL := 6.0           # 普通成功/失败震幅
 const HAND_COLLAPSE_DY := 150.0                 # 聚焦时手牌统一下移量(收起; = hover 上移量, 回 home 完整显示)
 const HAND_DIM_COLOR := Color(0.45, 0.45, 0.45, 1.0)  # 非白名单收起压暗(降亮度·不透明; modulate 乘色, 对美术友好)
                                                 #   白名单保持 Color.WHITE(不压暗, 凸显可投)。不用 alpha(会变半透明看穿)
@@ -77,6 +85,10 @@ var _pre_focus_cam_pos: Vector2 = Vector2.ZERO
 var _pre_focus_cam_zoom: Vector2 = Vector2.ONE
 var _pre_focus_saved: bool = false      # 仅首次进入聚焦时记录镜头(切换不覆盖)
 var _restore_cam_tween: Tween = null    # 解除聚焦的还原 tween 句柄: 中途重聚焦须 kill(防 chained callback 竞态)
+# UE pass: 屏幕震动状态(exp 衰减)。用 _camera.offset 抖动 → 独立于 position tween, 互不抢镜。
+var _shake_amp: float = 0.0
+var _shake_dur: float = 0.0
+var _shake_t: float = 0.0
 var _confirm_btn: Button = null         # 确定按钮(聚焦期)
 var _difficulty_label: Label = null     # 难度提示(鉴定型)
 var _press_screen: Vector2 = Vector2.ZERO  # 左键按下屏幕位置(判定点击 vs 拖动)
@@ -365,7 +377,7 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 	_event_card = chosen          # F3: 记 active 事件卡(L1 聚焦目标 + 重聚焦入口; chosen.clicked 已连 _on_board_pick)
 	# F3 L1 事件级聚焦: 镜头聚焦【因果链区域】(非具体卡 — 事件/选项/结局/继续同处一区, 触发即固定;
 	# 此后点各卡不再移镜头)+ 收起手牌(空白名单 → 全收起+全压暗) → 再展开选项(§2.9 F: 总览 → L1)。
-	_focus_camera_on(_focus_region_center())
+	_focus_camera_on(_active_frame())
 	_apply_hand_focus([])   # L1: 还没选选项, 无白名单 → 所有手牌收起+压暗
 	if not _options_shown:
 		_options_shown = true
@@ -443,11 +455,73 @@ func _commit_option(chosen: CardScn) -> void:
 func _focus_region_center() -> Vector2:
 	return _chain_origin + Vector2(SLOT_DX * 1.5, 0.0)
 
-## 聚焦到某世界坐标(F3 通用子函数, L1 事件级 / L2 选项级 / 重聚焦 共用):
-## 传目标世界坐标(非读节点 global_position — 避免目标卡仍在飞行中 tween 时取到旧位, codex P2)。
+## UE pass(借鉴 Voidmatrix「2D 摄像机」包围矩形动态取景): 给一组目标【中心坐标】,
+## 算最小包围矩形(各卡按 SIZE/2 外扩 + FRAME_PAD), 返回 {center, zoom}。
+## zoom = 适配视口的缩放 min(视口/矩形), clamp 到 [MIN_FOCUS_ZOOM, max_zoom] —— 内容少不怼脸、内容宽则拉远;
+## 注: 内容极宽高致 fit < MIN_FOCUS_ZOOM 时以下限为准(会裁切边缘) —— 事件区宽度远小于视口, 仅盘面卡极多时可能触及。
+## max_zoom 默认取 FOCUS_ZOOM(聚焦态); 盘面总览传 1.0(只拉远不放大)。
+func _frame_targets(centers: Array[Vector2], max_zoom: float = -1.0) -> Dictionary:
+	var top: float = FOCUS_ZOOM.x if max_zoom < 0.0 else max_zoom
+	if centers.is_empty():
+		return {"center": _focus_region_center(), "zoom": Vector2(top, top)}
+	var half: Vector2 = CardScn.SIZE * 0.5 + Vector2(FRAME_PAD, FRAME_PAD)
+	var min_x: float = INF
+	var min_y: float = INF
+	var max_x: float = -INF
+	var max_y: float = -INF
+	for c: Vector2 in centers:
+		min_x = minf(min_x, c.x - half.x)
+		max_x = maxf(max_x, c.x + half.x)
+		min_y = minf(min_y, c.y - half.y)
+		max_y = maxf(max_y, c.y + half.y)
+	var rect_w: float = maxf(max_x - min_x, 1.0)
+	var rect_h: float = maxf(max_y - min_y, 1.0)
+	var center: Vector2 = Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+	var vp: Vector2 = get_viewport_rect().size
+	var fit: float = clampf(minf(vp.x / rect_w, vp.y / rect_h), MIN_FOCUS_ZOOM, top)
+	return {"center": center, "zoom": Vector2(fit, fit)}
+
+## 当前 active 事件区的取景目标 = 事件卡(_chain_origin) + 全部选项卡【预期布局位】(+结果位)。
+## 用预期布局位(非读节点 global_position)避免读到飞行中 tween 的旧位(沿用 codex P2 修法);
+## 进聚焦时一次性框定整区 → 之后点各卡/展开选项/出结果均不重框(尊重「触发即固定」决定, §2.9 point 1)。
+func _active_frame() -> Dictionary:
+	var centers: Array[Vector2] = [_chain_origin]
+	var n: int = _option_cards.size()
+	if n == 0:
+		n = _data_source.options_for_event().size()   # 首次聚焦时选项尚未 spawn, 取数量预测位
+	for i in n:
+		centers.append(Vector2(_chain_origin.x + (i + 1) * SLOT_DX, _chain_origin.y))
+	# 结果位(SLOT_DX*2) + 继续位(SLOT_DX*3): 确定后/揭示后才出现, 但确定不移镜头 → 提前纳入取景,
+	# 与契约「区域含 事件→选项→结局→继续, 触发即固定」(§2.9 point 1)一致, 不依赖 zoom 余量巧合。
+	centers.append(Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y))
+	centers.append(Vector2(_chain_origin.x + SLOT_DX * 3.0, _chain_origin.y))
+	return _frame_targets(centers)
+
+## UE pass: 每帧推进屏幕震动(exp 衰减)。_camera.offset 独立于 position → 与聚焦/平移 tween 互不抢镜。
+func _process(delta: float) -> void:
+	if _shake_amp <= 0.0:
+		return
+	_shake_t += delta
+	var cur: float = _shake_amp * exp(-SHAKE_DECAY * _shake_t)
+	if _shake_t >= _shake_dur or cur < 0.5:
+		_shake_amp = 0.0
+		if _camera != null:
+			_camera.offset = Vector2.ZERO
+		return
+	if _camera != null:
+		_camera.offset = Vector2(randf_range(-cur, cur), randf_range(-cur, cur))
+
+## UE pass: 触发一次屏幕震动(amplitude 世界像素, duration 秒)。高光时刻调用。
+func shake(amplitude: float, duration: float = 0.45) -> void:
+	_shake_amp = amplitude
+	_shake_dur = duration
+	_shake_t = 0.0
+
+## 聚焦取景(F3 通用子函数, L1 事件级 / L2 选项级 / 重聚焦 共用):
+## 传 {center, zoom} 取景帧(由 _active_frame 算, 用预期布局位非 global_position — codex P2)。
 ## 入口先 kill 待定的还原 tween(防其 chained callback 误清 _pre_focus_saved, codex P1)。
-## 首次进入聚焦时记录总览镜头(切换/重聚焦不覆盖, 供解除时还原)→ 镜头 zoom + 居中到目标。
-func _focus_camera_on(world_pos: Vector2) -> void:
+## 首次进入聚焦时记录总览镜头(切换/重聚焦不覆盖, 供解除时还原)→ 镜头平移 + 适配 zoom 到取景帧。
+func _focus_camera_on(frame: Dictionary) -> void:
 	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
 		_restore_cam_tween.kill()   # 中途重聚焦: 杀还原 tween → 其 _pre_focus_saved=false callback 不再触发
 	_restore_cam_tween = null
@@ -455,30 +529,34 @@ func _focus_camera_on(world_pos: Vector2) -> void:
 		_pre_focus_cam_pos = _camera.position
 		_pre_focus_cam_zoom = _camera.zoom
 		_pre_focus_saved = true
+	var target_pos: Vector2 = frame.get("center", _focus_region_center())
+	var target_zoom: Vector2 = frame.get("zoom", FOCUS_ZOOM)
 	var cam_tw := _camera.create_tween()
 	cam_tw.set_parallel(true)
-	cam_tw.tween_property(_camera, "position", world_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	cam_tw.tween_property(_camera, "zoom", FOCUS_ZOOM, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	cam_tw.tween_property(_camera, "position", target_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	cam_tw.tween_property(_camera, "zoom", target_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
 ## 继续后摇镜头指向剩余盘面卡(point 2): 平移到盘面卡中心 + 还原总览 zoom(从事件区 zoom-out 移向盘面),
 ## 引导玩家"还有待办事件, 继续盲选"。回盘面(剩余多张)/ 骨架·自省登场(单张新卡)同此 —— 指向那批新卡。
 func _camera_to_board() -> void:
-	var sum := Vector2.ZERO
-	var n := 0
+	var centers: Array[Vector2] = []
 	for node in _board_cards:
 		if is_instance_valid(node):
-			sum += (node as Node2D).position
-			n += 1
-	if n == 0:
+			centers.append((node as Node2D).position)
+	if centers.is_empty():
 		return
 	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
 		_restore_cam_tween.kill()
 	_restore_cam_tween = null
-	var center: Vector2 = sum / float(n)
-	# 两步串行(默认非并行): 先 zoom out 还原总览缩放(位置不动, 仍在事件区), 再平移指向未展开的盘面卡。
+	# UE pass(借鉴 Voidmatrix 包围矩形动态取景): 框住剩余盘面卡 + 适配缩放; max_zoom 限 1.0 ——
+	# 盘面是【总览态】, 只拉远不怼脸(单张余背时也不放大), 比原"质心+还原固定 zoom"更贴合内容。
+	var frame: Dictionary = _frame_targets(centers, 1.0)
+	var board_zoom: Vector2 = frame.get("zoom", _pre_focus_cam_zoom)
+	var board_center: Vector2 = frame.get("center", centers[0])
+	# 两步串行(默认非并行): 先 zoom 适配盘面(位置不动, 仍在事件区), 再平移指向未展开的盘面卡。
 	var tw := _camera.create_tween()
-	tw.tween_property(_camera, "zoom", _pre_focus_cam_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(_camera, "position", center, 0.40).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_camera, "zoom", board_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_camera, "position", board_center, 0.40).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_restore_cam_tween = tw   # 存句柄(F1): 摇镜头途中玩家盲选下一张 → _focus_camera_on 会 kill 它, 防双镜头 tween 抢镜
 
 ## 重聚焦事件卡(§2.9 F: 总览挂起态/L1 点事件卡 → L1; 若当前在 L2 则先退选项回 L1, 镜头转事件不回总览)。
@@ -488,7 +566,7 @@ func _refocus_event() -> void:
 	if _focus_active:
 		_flyback_invested_markers()   # L2 → L1: 未确定的投入飞回(可逆)
 		_clear_option_focus_ui()
-	_focus_camera_on(_focus_region_center())   # 重聚焦【区域】(非具体卡; point 1)
+	_focus_camera_on(_active_frame())   # 重聚焦【区域】(非具体卡; point 1)
 	_apply_hand_focus([])             # L1: 手牌保持收起、改全压暗(L2→L1 不升起再收, 仅改亮度)
 
 ## 手牌全部归位总览态: 升回 home + 原大小 + 全亮 + 清 hover 上移量。仅解除聚焦回总览时调
@@ -541,7 +619,7 @@ func _enter_focus(option: CardScn, option_id: String, opt_type: int, whitelist: 
 	# point 1: 选项聚焦【不移镜头】(区域固定)。仅当从总览(挂起)直接点选项进入(未在聚焦态)才先聚焦区域;
 	# 已在 L1/L2 内点选项/切换选项 → 镜头不动, 只换选中高亮 + 手牌白名单。
 	if not _pre_focus_saved:
-		_focus_camera_on(_focus_region_center())
+		_focus_camera_on(_active_frame())
 	_apply_hand_focus(whitelist)
 	_update_difficulty(opt_type, threshold)
 	if _confirm_btn == null:
@@ -789,11 +867,12 @@ func _expand_result(option_id: String, opt_type: int, tier: String) -> void:
 		str(_data_source.tier_label(tier)), "点击牌背揭示。", false)
 	res.position = Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y)  # 结果在选中选项右侧
 	_chain_nodes.append(res)
-	res.clicked.connect(func(c: CardScn) -> void: _reveal_result(c, outcome))
+	var rt := tier   # 按值捕获档位 → 揭示时据此定震幅(大成功/大失败更猛)
+	res.clicked.connect(func(c: CardScn) -> void: _reveal_result(c, outcome, rt))
 	# point 1: 结果卡出现【不移镜头】—— 它本就落在固定区域内(区域已框住 事件→结局→继续), 镜头不动。
 
 ## 揭示结果(§3): 封缄 → 屏息 → 翻牌 → 显式档位 → 生成可领取标记
-func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
+func _reveal_result(card: CardScn, outcome: Dictionary, tier: String = "success") -> void:
 	if _result_revealed:
 		return
 	_result_revealed = true
@@ -801,6 +880,9 @@ func _reveal_result(card: CardScn, outcome: Dictionary) -> void:
 	if not is_instance_valid(card):
 		return
 	card.flip_to(true)  # 翻开后显式露出 tier(卡标题)
+	# UE pass: 翻牌瞬间抖屏制造"爽点"; 大成功/大失败更猛(SHAKE_AMP_BIG), 普通成功/失败轻抖(借鉴 Voidmatrix exp 衰减)
+	var amp: float = SHAKE_AMP_BIG if (tier == "great_success" or tier == "great_fail") else SHAKE_AMP_SMALL
+	shake(amp)
 	await get_tree().create_timer(CardScn.FLIP_TIME).timeout
 	if not is_instance_valid(card):
 		return
