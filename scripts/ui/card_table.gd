@@ -18,6 +18,8 @@ const MockDataSourceScn := preload("res://scripts/ui/mock_data_source.gd")
 # E0 卡牌实体地基: 权威态 + 前端镜像(弱类型 preload 持有, 不依赖 class_name 缓存)
 const CardZoneStoreScn := preload("res://scripts/systems/card_zone_store.gd")
 const CardRegistryScn := preload("res://scripts/ui/card_registry.gd")
+# B 升格舞台(乙): 事件聚焦时世界内放大成场景面板, 包裹选项/结果
+const EventStageScn := preload("res://scripts/ui/event_stage.gd")
 
 # E0 MVP Zone 清单(逻辑区域, 与视觉父节点解耦): 锚点簇 / 资源手牌 / 因果链 / 弃牌堆
 const ZONE_ANCHOR := "anchor"
@@ -50,6 +52,7 @@ var _chain_nodes: Array[Node] = []   # 当前 active 事件链的卡/标记(事�
 var _option_cards: Array[Node] = []  # 当前选项卡(选定后清除未选中的)
 # ---- 持久盘面(批次一: 待办盘面跨事件留桌; 真源 [[事件包交互流程_持久盘面与流程驱动_MVP]]) ----
 var _board_cards: Array[Node] = []   # 待办盘面卡背(镜像引擎 handQueue): 盲选一张少一张, 余背留桌
+var _anchor_cards: Array[Node] = []  # 地点锚点簇(地点卡 + 我要走): 升格聚焦时隐藏, 避免与舞台面板重叠
 var _board_active: bool = false      # 盲选守卫: 已有 active 事件结算中 → 余背暂不可选(批次二继续后解锁)
 var _location_locked: bool = false   # F2: 地点卡开包瞬间锁定, MVP 单程不恢复
 var _board_origin: Vector2 = Vector2.ZERO   # 盘面区起点(卡背横排基准; §五边原型边定)
@@ -74,6 +77,7 @@ const HAND_COLLAPSE_DY := 150.0                 # 聚焦时手牌统一下移量
 const HAND_DIM_COLOR := Color(0.45, 0.45, 0.45, 1.0)  # 非白名单收起压暗(降亮度·不透明; modulate 乘色, 对美术友好)
                                                 #   白名单保持 Color.WHITE(不压暗, 凸显可投)。不用 alpha(会变半透明看穿)
 var _event_card: CardScn = null         # F3: 当前 active 事件卡(L1 聚焦目标 + 总览挂起态点它重聚焦入口)
+var _event_stage: EventStage = null     # B 升格舞台(乙): 聚焦时展示完整叙事+美术, 解除时收拢; 与 _event_card 互为显隐
 var _sealed: bool = false               # F5 封缄态: 确定后置位, 此后选项/事件不可再聚焦改选
 var _focus_active: bool = false         # L2: 选项级聚焦中(可投入/确定); L1 与总览均为 false
 var _focused_option: CardScn = null     # 当前聚焦的选项卡
@@ -245,6 +249,7 @@ func _build_anchor_cluster() -> void:
 	var leave := _spawn_card(LID_LEAVE, CardScn.CardType.LEAVE, ZONE_ANCHOR, _upper_zone,
 		"我要走", "另择去处。", true)
 	leave.position = Vector2(440, 840)
+	_anchor_cards = [loc, leave]   # B 升格: 聚焦时随盘面一并隐藏
 
 ## 下区手牌资源(§2.4): 资源卡 + 标记, 常驻 CanvasLayer(不随镜头, 决策①)
 func _build_hand_zone() -> void:
@@ -369,12 +374,21 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 	_chain_nodes.append(chosen)   # 计入事件链 → 继续清场时随链回收(非盘面回收)
 	_relayout_board()             # DD-B2: 其后余背向前补齐, 平滑滑动填空洞(与选中卡飞出同时)
 	# 选中卡: 填真实事件文字 → 飞到因果链起点 → 翻开 → 进 L1 事件聚焦 → 展开选项。
-	chosen.set_face_text(str(event_info.get("title", "")), str(event_info.get("body", "")))
+	# B 升格: 事件卡只承载标题(紧凑面); 完整叙事 + 美术交给升格舞台。事件卡飞抵起点后隐藏(舞台接管),
+	# 拍桌解除时再现身作总览挂起态的可点重聚焦入口(见 _unfocus_to_overview / _refocus_event)。
+	chosen.set_face_text(str(event_info.get("title", "")), "")
 	if chosen.position != _chain_origin:
 		var tw := chosen.create_tween()
 		tw.tween_property(chosen, "position", _chain_origin, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	chosen.flip_to(true)
 	_event_card = chosen          # F3: 记 active 事件卡(L1 聚焦目标 + 重聚焦入口; chosen.clicked 已连 _on_board_pick)
+	# B 升格: 舞台登场(完整叙事 + 16:9 美术满铺); 事件卡隐于舞台之后
+	_spawn_event_stage(
+		str(event_info.get("title", "")),
+		str(event_info.get("background_art", "")),
+		str(event_info.get("narrative", event_info.get("body", "")))
+	)
+	chosen.visible = false
 	# F3 L1 事件级聚焦: 镜头聚焦【因果链区域】(非具体卡 — 事件/选项/结局/继续同处一区, 触发即固定;
 	# 此后点各卡不再移镜头)+ 收起手牌(空白名单 → 全收起+全压暗) → 再展开选项(§2.9 F: 总览 → L1)。
 	_focus_camera_on(_active_frame())
@@ -485,6 +499,9 @@ func _frame_targets(centers: Array[Vector2], max_zoom: float = -1.0) -> Dictiona
 ## 用预期布局位(非读节点 global_position)避免读到飞行中 tween 的旧位(沿用 codex P2 修法);
 ## 进聚焦时一次性框定整区 → 之后点各卡/展开选项/出结果均不重框(尊重「触发即固定」决定, §2.9 point 1)。
 func _active_frame() -> Dictionary:
+	# B 升格: 舞台在场时镜头框住整块面板(替代离散卡取景)
+	if _event_stage != null and is_instance_valid(_event_stage):
+		return _stage_frame()
 	var centers: Array[Vector2] = [_chain_origin]
 	var n: int = _option_cards.size()
 	if n == 0:
@@ -496,6 +513,60 @@ func _active_frame() -> Dictionary:
 	centers.append(Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y))
 	centers.append(Vector2(_chain_origin.x + SLOT_DX * 3.0, _chain_origin.y))
 	return _frame_targets(centers)
+
+# ---------- B 升格舞台(乙): 事件聚焦时世界内放大成场景面板, 包裹选项/结果 ----------
+
+## 升格舞台中心(世界): 因果链区上方, 使叙事在上、选项卡行(y=_chain_origin.y)落在面板下部。
+func _stage_center() -> Vector2:
+	return Vector2(_chain_origin.x + SLOT_DX * 1.5, _chain_origin.y - 240.0)
+
+## 升格态镜头取景: 框住整块舞台面板(替代离散卡取景)。
+func _stage_frame() -> Dictionary:
+	var vp: Vector2 = get_viewport_rect().size
+	var panel: Vector2 = EventStageScn.PANEL_SIZE + Vector2(FRAME_PAD, FRAME_PAD) * 2.0
+	var fit: float = clampf(minf(vp.x / panel.x, vp.y / panel.y), MIN_FOCUS_ZOOM, FOCUS_ZOOM.x)
+	return {"center": _stage_center(), "zoom": Vector2(fit, fit)}
+
+## 总览态世界元素(盘面余背 + 地点锚点簇)显隐: 升格聚焦时隐藏避免与舞台面板重叠; 解除/结束时恢复。
+## (手牌在独立 CanvasLayer, 由 _apply_hand_focus/_restore_hand_home 管, 不在此列。)
+func _set_overview_visible(v: bool) -> void:
+	for node in _board_cards:
+		if is_instance_valid(node):
+			(node as Node2D).visible = v
+	for node in _anchor_cards:
+		if is_instance_valid(node):
+			(node as Node2D).visible = v
+
+## 生成并淡入升格舞台(z_index 调低 → 选项/结果卡叠于其上, 形成"包裹"观感)+ 隐藏总览元素。
+func _spawn_event_stage(title: String, art_filename: String, narrative: String) -> void:
+	_despawn_event_stage()
+	var stage: EventStage = EventStageScn.new()
+	stage.z_index = -10
+	_upper_zone.add_child(stage)
+	stage.position = _stage_center()
+	stage.setup(title, art_filename, narrative)
+	stage.fade_in()
+	_event_stage = stage
+	_set_overview_visible(false)
+
+## 重新淡入(重聚焦时)+ 隐藏总览元素。
+func _show_event_stage() -> void:
+	if _event_stage != null and is_instance_valid(_event_stage):
+		_event_stage.fade_in()
+		_set_overview_visible(false)
+
+## 淡出收拢(拍桌解除时; 不回收, 留待重聚焦或事件结束清场)+ 恢复总览元素。
+func _hide_event_stage() -> void:
+	if _event_stage != null and is_instance_valid(_event_stage):
+		_event_stage.fade_out()
+	_set_overview_visible(true)
+
+## 回收舞台(事件结束清场)+ 恢复总览元素(继续回盘面后余背须再现)。
+func _despawn_event_stage() -> void:
+	if _event_stage != null and is_instance_valid(_event_stage):
+		_event_stage.queue_free()
+	_event_stage = null
+	_set_overview_visible(true)
 
 ## UE pass: 每帧推进屏幕震动(exp 衰减)。_camera.offset 独立于 position → 与聚焦/平移 tween 互不抢镜。
 func _process(delta: float) -> void:
@@ -566,6 +637,9 @@ func _refocus_event() -> void:
 	if _focus_active:
 		_flyback_invested_markers()   # L2 → L1: 未确定的投入飞回(可逆)
 		_clear_option_focus_ui()
+	# B 升格: 舞台重现 → 事件卡隐于其后
+	_show_event_stage()
+	_event_card.visible = false
 	_focus_camera_on(_active_frame())   # 重聚焦【区域】(非具体卡; point 1)
 	_apply_hand_focus([])             # L1: 手牌保持收起、改全压暗(L2→L1 不升起再收, 仅改亮度)
 
@@ -619,6 +693,10 @@ func _enter_focus(option: CardScn, option_id: String, opt_type: int, whitelist: 
 	# point 1: 选项聚焦【不移镜头】(区域固定)。仅当从总览(挂起)直接点选项进入(未在聚焦态)才先聚焦区域;
 	# 已在 L1/L2 内点选项/切换选项 → 镜头不动, 只换选中高亮 + 手牌白名单。
 	if not _pre_focus_saved:
+		# B 升格: 从总览点选项 = 视同点事件 → 重升格舞台 + 隐事件卡 + 隐总览元素 + 框面板
+		_show_event_stage()
+		if _event_card != null and is_instance_valid(_event_card):
+			_event_card.visible = false
 		_focus_camera_on(_active_frame())
 	_apply_hand_focus(whitelist)
 	_update_difficulty(opt_type, threshold)
@@ -723,6 +801,10 @@ func _confirm_focus() -> void:
 ## (点继续 = 事件结束, 走 _clear_event_chain → _focus_teardown_snap + _camera_to_board, 镜头去盘面而非原总览。)
 func _unfocus_to_overview() -> void:
 	_flyback_invested_markers()
+	# B 升格: 收拢舞台 → 事件卡现身作总览挂起态的可点重聚焦入口
+	_hide_event_stage()
+	if _event_card != null and is_instance_valid(_event_card):
+		_event_card.visible = true
 	if _pre_focus_saved:
 		var cam_tw := _camera.create_tween()
 		cam_tw.set_parallel(true)
@@ -883,6 +965,10 @@ func _reveal_result(card: CardScn, outcome: Dictionary, tier: String = "success"
 	# UE pass: 翻牌瞬间抖屏制造"爽点"; 大成功/大失败更猛(SHAKE_AMP_BIG), 普通成功/失败轻抖(借鉴 Voidmatrix exp 衰减)
 	var amp: float = SHAKE_AMP_BIG if (tier == "great_success" or tier == "great_fail") else SHAKE_AMP_SMALL
 	shake(amp)
+	# B 升格: 揭示瞬间, 升格舞台叙事切为结果反馈文字(同一事件舞台, 不另起覆盖层)
+	var feedback: String = str(outcome.get("narrative", ""))
+	if not feedback.is_empty() and _event_stage != null and is_instance_valid(_event_stage):
+		_event_stage.set_narrative(feedback)
 	await get_tree().create_timer(CardScn.FLIP_TIME).timeout
 	if not is_instance_valid(card):
 		return
@@ -1002,6 +1088,7 @@ func _debug_assert_board_sync(window: Dictionary) -> void:
 func _clear_event_chain() -> void:
 	# 事件结束清场前先拆解聚焦【不移镜头】(L1/L2/结果态/封缄态均拆): 镜头去向交 _on_continue(摇向盘面, point 2)。
 	_focus_teardown_snap()
+	_despawn_event_stage()   # B 升格: 事件结束回收舞台
 	for node in _chain_nodes:
 		if not is_instance_valid(node):
 			continue

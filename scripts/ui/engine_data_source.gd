@@ -335,6 +335,11 @@ func outcome_for_option(option_id: String, tier: String) -> Dictionary:
 	# 透明消化 outcome 屏: 选项结算后引擎可能追加 outcome 叙事屏 (phase=presentation),
 	# 需继续 confirm("") 推到末屏才真正 advance turn。卡牌前端结果卡已展示 tier+marker,
 	# outcome 叙事屏对 card_table 无意义。
+	# B 升格: 收集结算后的 outcome 叙事屏(原全部 drain 丢弃) → 供升格舞台在结果揭示时切换展示。
+	var outcome_screens: Array[String] = []
+	var first_outcome := _extract_presentation_body(result)
+	if not first_outcome.is_empty():
+		outcome_screens.append(first_outcome)
 	var hops: int = 0
 	while bool(result.get("ok", false)) and str(result.get("phase", "")) == "presentation":
 		result = _drain_one_presentation_step(result)
@@ -342,6 +347,10 @@ func outcome_for_option(option_id: String, tier: String) -> Dictionary:
 		if hops > MAX_AUTO_HOPS:
 			push_warning("[EngineDataSource] outcome drain exceeded MAX_AUTO_HOPS")
 			break
+		if bool(result.get("ok", false)):
+			var t := _extract_presentation_body(result)
+			if not t.is_empty():
+				outcome_screens.append(t)
 	# P2-2: drain 失败不应假装结算完成 — 保 _pending_resolved=false 让下次 events_for_pile 触发 cancel,
 	#       avoid 把未完成结算的世界状态延续到下一回合。
 	if not bool(result.get("ok", false)):
@@ -351,7 +360,9 @@ func outcome_for_option(option_id: String, tier: String) -> Dictionary:
 	_pending_resolved = true
 	var after := _snapshot_token_counts()
 	var deltas := _diff_token_counts(before, after)
-	return ResourceMarkerPoolScn.build_outcome_bill(deltas, tier, [])
+	var bill: Dictionary = ResourceMarkerPoolScn.build_outcome_bill(deltas, tier, [])
+	bill["narrative"] = "\n\n".join(outcome_screens)   # B 升格: 结果反馈文字, 供升格舞台
+	return bill
 
 
 # 功能: 档位中文名 (与 MockData.tier_label 同形)
@@ -392,12 +403,22 @@ func _finalize_event_from_preview(preview: Dictionary) -> Dictionary:
 	var title := str(preview.get("title", ""))
 	var body := _extract_presentation_body(preview)
 	var event_id := str(preview.get("event_id", ""))
+	# B 升格: 收集全部 presentation 屏文本(原仅取 p1 当 body, p2~p4 被 drain 丢弃) → 供升格舞台展示完整叙事。
+	# 背景美术取首屏 resolved_background_art(事件级, 仅留文件名, 前端自拼 res 路径)。
+	var background_art := str(preview.get("resolved_background_art", "")).get_file()
+	var narrative_screens: Array[String] = []
+	if not body.is_empty():
+		narrative_screens.append(body)
 	var hops: int = 0
 	while bool(preview.get("ok", false)) and str(preview.get("phase", "")) == "presentation":
 		preview = _drain_one_presentation_step(preview)
 		hops += 1
 		if hops > MAX_AUTO_HOPS:
 			return {"ok": false, "error": "presentation drain exceeded MAX_AUTO_HOPS"}
+		if bool(preview.get("ok", false)):
+			var screen_text := _extract_presentation_body(preview)
+			if not screen_text.is_empty():
+				narrative_screens.append(screen_text)
 	if not preview.get("ok", false):
 		return {"ok": false, "error": str(preview.get("error", "drain failed"))}
 	_pending_choice_point_id = ""
@@ -421,6 +442,8 @@ func _finalize_event_from_preview(preview: Dictionary) -> Dictionary:
 		"event_id": event_id,
 		"title": title,
 		"body": body,
+		"narrative": "\n\n".join(narrative_screens),   # B 升格: 完整叙事(p1~pN), 供升格舞台
+		"background_art": background_art,               # B 升格: 16:9 场景图文件名(缺则空)
 		"has_choice": has_choice,
 		"choice_point_id": _pending_choice_point_id,
 	}
@@ -527,4 +550,4 @@ func _diff_token_counts(before: Dictionary, after: Dictionary) -> Array:
 
 # 空账单兜底 (engine 调用失败时返回, 保证 card_table 不崩)
 func _empty_outcome(tier: String) -> Dictionary:
-	return {"tier": tier, "markers": [], "exp_deltas": [], "flags": []}
+	return {"tier": tier, "markers": [], "exp_deltas": [], "flags": [], "narrative": ""}
