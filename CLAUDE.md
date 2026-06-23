@@ -48,6 +48,19 @@ Design submodule 已按三档分区组织(2026-05-15 落地):
 - **删除 / 重命名文档前**: 用 `backlinks` 检查引用关系,避免断链
 - **优先用 Obsidian CLI `move` 命令**: 移动文档时自动更新所有 `[[]]` 链接
 
+**文档分层(L0–L3 + 横向;新文档前向生效,旧文档零回填)**:
+
+吸收 tile-adventure 治理体系(见 [文档治理与进度看板_MVP实施](Design/zhengdao-cards/进度/文档治理与进度看板_MVP实施.md))。**新建**设计文档按层归位:
+
+- **L0 方向** → [开发路线图](Design/zhengdao-cards/进度/开发路线图.md)(新方向先入此 → 再同步 `progress.yaml` entries)
+- **L1 单模块设计** → 按 [MVP设计文档规范](Design/共享/工艺规范/MVP设计文档规范.md),放 `设计/` 或 `进度/`
+- **L2 跨模块发包** → [八字段实装包模板](Design/zhengdao-cards/实装包模板.md)(仅大改动跨模块时切包)
+- **L3 待办** → [待跟踪事项索引](Design/zhengdao-cards/待跟踪事项索引.md)(P0–P3)
+- **横向灵感** → [设计候选库](Design/zhengdao-cards/设计候选库.md)
+- **进度真相** → `Design/zhengdao-cards/_progress_board/progress.yaml`(机器态单点;`check_board.py` 校验、`serve.ps1` 看板网页)
+
+> **覆盖逻辑与文档约定正交**: 进度看板 node 只链接文档(`docs[].path`),不关心文档是旧混层还是新分层写法 —— 一套 schema,新约定只把可选字段(如 `impl.modules`)填得更满。
+
 **两步提交**(代码 + 设计文档一起改时):
 
 1. 先 Design submodule 内 commit + push
@@ -98,6 +111,8 @@ Design submodule 已按三档分区组织(2026-05-15 落地):
 
 任一失败即阻断提交。hook 只在 `.git/hooks/` 本地生效,**不入 repo**;跨机器克隆后需手动重建(从 vibe-test 拷贝)。
 
+**Design submodule 另有独立 hook**(`Design/.git/hooks/pre-commit`,同样不入 repo、需手动重建): ①`_scripts/check_doc_tags.py` 标签合规检查(vault 全量,**阻断**);②`_scripts/check_progress_board_sync.py --partition zhengdao-cards` 看板漂移提醒(改了 `zhengdao-cards/进度/*.md` 却没同步 `progress.yaml` 时提示,**分区作用域、非阻断、对 vibe-test 零触发**)。与 vibe-test 的 Design checkout hook 各自独立。
+
 ### Python 命令兼容(Windows + WSL)
 
 hook 内 Python 调用用 `PYTHON=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)` 探测,同 vibe-test 规范。`PYTHONUTF8=1` 始终保留。
@@ -113,56 +128,28 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 # 当前进度
 
-进度详情在 `Design/zhengdao-cards/进度/` 下,此处仅维护索引。
+> 进度详情在 `Design/zhengdao-cards/进度/` 下；本节仅维护索引(每条 ≤20 字状态摘要)。
+> 方向总览 → [开发路线图](Design/zhengdao-cards/进度/开发路线图.md)(L0 真源);机器状态/焦点 → `Design/zhengdao-cards/_progress_board/progress.yaml`(`check_board.py` 校验、`serve.ps1` 看板网页);跨文档待办 → [待跟踪事项索引](Design/zhengdao-cards/待跟踪事项索引.md)。
 
-## 活跃
+## 活跃(≤10 条硬上限)
 
-- [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md) — **草案 v3 + 工程启动 checklist** + **§7.2 资源体系 + §7.3 回馈原则双议题收口**(2026-05-18~19):取消消耗类(保留金钱卡牌化外部循环)/ 心性系统重构(心性标记 + xinxing 切换 + 行为驱动)/ 关系标记分配机制 / 孤注一掷形态 / **能力 + 人际经验值升阶机制** / §7.3 涌现两路径(调度 + 鉴定)+ 5 条回馈原则 + 鉴定丰富度首要指标. 章节更新 §7.2 / §3.4 / §3.5 / §7.3 / §7.4 / §7.7 / §五. **§7.8 工程启动**: A/B/C ✅ + Godot 4.6.2 ✅. **§7.1 普通事件撰写规格 ✅ 全节收口**(2026-05-21, A 模板层: 处境模板/三类文字长度/选项两型+经济/5 类原型/四档结果; B/C/D 原则层: 鉴定分布三维度/两层回馈模型/金钱消费场景). **D 阶段 MVP 1 期前置三议题(§7.1/§7.2/§7.3)全部完成 → MVP 1 期实施**。
+- [完整事件流程_实施](Design/zhengdao-cards/进度/完整事件流程_实施.md) — **🔧 当前焦点**:E0→批次三 ✅,剩 **UE 调优 pass**(参数归拢+体验+美术)→ I1 收尾。流程真源 [事件包交互流程_持久盘面与流程驱动_MVP](Design/zhengdao-cards/设计/事件包交互流程_持久盘面与流程驱动_MVP.md)
+- [文档治理与进度看板_MVP实施](Design/zhengdao-cards/进度/文档治理与进度看板_MVP实施.md) — ✅ 已实施(S0–S5 + 冒烟 A–E):开发路线图/看板/待跟踪/候选库/八字段/分区 hook 落地
 
-- [卡牌前端交互设计](Design/zhengdao-cards/设计/卡牌前端交互设计.md) — **前端表现 + 交互层设计规格**(2026-05-22): §0 原则 + §1 基础交互原语 + §2 整体布局 + **§3 结果揭示 ✅ 收口**(结果卡=统一反馈 / 投入产出隔离 / 数值变动=类标记点击领取 / 翻牌通用+四档 payload+显式 tier / 经验成长标记 / 取消弹窗;§3.2 引擎衍生问题待 B①)+ **「技术基础」节**(架构选型 Node2D+Camera2D+Control + B③ 实跑清单,收口 _explore #014). 前端技术储备 _explore #014(架构)/ #015(参考游戏设计)已完成并收口入本 doc。 **§2.5/§2.6 镜头驱动聚焦 + 双入口投入 改版收口**(2026-05-26 S3b 原型反馈,覆盖原汇聚模型)。留后续:各卡视觉 / 投入鉴定细节(边原型边定)/ 牌库平移 / 心性·NPC 呈现。
+## 预启动(方向已认可,等启动时机)
 
-- [前端骨架_LineA_实施](Design/zhengdao-cards/进度/前端骨架_LineA_实施.md) — **Line A 前端骨架 + 架构验证 实施文档**(2026-05-25 启动 ~ 2026-05-26 收口):S1 牌桌底座+原语 + S2 锚点簇/因果链/手牌 + S3a 揭示循环(屏息→翻牌→显式档位→标记领取)+ S3b 鉴定聚焦(镜头驱动 zoom+居中+收起)+投入双入口(点击手牌为主/拖标记备)+ tier 由投入定. **Line A 全段 ✅,核心循环用 mock 跑通 → 新会话接 Line B**(提交 `6be2f63`→`ef8e086`)。
+- 普通事件资产 B④(§7.1) — 需可跑循环 playtest 后([开发路线图](Design/zhengdao-cards/进度/开发路线图.md) e3)
+- 鉴定难度·成功率·标记 X.4 — 解 adapter `FALLBACK_DIFFICULTY` 占位(开发路线图 e4)
 
-- [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) — **Line B ✅ 全段完成**(2026-05-27~28):S1 数据契约 + S2 资源标记 + S3 选项调度 + S8.0 鉴定算法 + S8.2-S8.7 §3.2 汇合.**核心循环用真数据 playtest 跑通**(loc_pharmacy 包内 turn 推进 + 末位池命中鉴定型 + 包结束 + 自省透明消化 + 下一包).engine 加 2 个 public 接口(`confirm_pending_turn_with_forced_tier` + `cancel_pending_turn`)+ `_apply_option_resolution` forced 短路(原 vibe-test 路径零影响).新建 `engine_data_source.gd` 适配器(~290 行, 3 处透明消化抹平 vibe-test/zhengdao 事件语义差)+ `mock_data_source.gd` fallback(USE_ENGINE=false 路径).card_table 4 个调用点接 `_data_source`.单元冒烟 5/5 + playtest ✅.**S8 暴露 3 个卡牌化前置 UX 议题 → [[卡牌前端交互设计]] §3.X 立项**(B④ 前置).**S4-S7 增强切片延后**(字段先建, 行为后填).
+## 已归档
 
-- [完整事件流程_实施](Design/zhengdao-cards/进度/完整事件流程_实施.md) — **卡牌实体地基 + 盲选承诺窗口 + §2.9 聚焦补全 实施文档**(2026-06-02 落盘):§3.X.3 收口的盲选承诺窗口(开包预抽 K 张承诺事件 / 卡背盲选 / 不补牌 / skeleton 压轴 window-of-1)+ §2.9 未实现的三块聚焦骨架(事件锁定 / 一层事件级聚焦 /【继续】卡收尾)合并为一条完整事件循环切片. **E0 卡牌实体地基**(三原语: 稳定实例 uid + 实例状态 def_ref+modifiers + Zone 一等实体;**真源在 world_state、前端注册表镜像**;最小实现、操作/效果延后)**三块全部 ✅**(2026-06-03):数据模型 `card_data.gd`(7/7)+ 权威态 `card_zone_store.gd`(9/9)+ 视图层 `card_registry.gd`(14/14)+ `card.gd` 持 model + `card_table.gd` 回修 Line A 6 类卡 + spawn/despawn 工厂;真实 app + GUI 回归 + codex P1/P2/P3 全无. **E1 引擎包模型 ✅**(2026-06-04, 提交 34a0ca6): uid 贯穿盲选窗口(`_card_store` 持 handQueue uid + `confirm_hand_pick(uid)` + 余牌/causal_chain 清理 + `hand_window` phase), 平行加队列不动现有结算链路; 冒烟 24/24 + GUI 跑测 + `/code-review`(codex 两次卡死改本地)1 P2(causal_chain 泄漏)+2 P3 修复. **A1 适配器 ✅**(2026-06-08): 承诺窗口接口 `pack_window_for_pile`(blind/single 两 mode)+ `pick_hand` + 公共尾 `_finalize_event_from_preview` + 引擎 `get_card_store()`; `smoke_a1_pack_window` 25/25 + 回归全绿 + codex(sonnet)1 P1+1 P2 全修. 规格细化: registry 全量镜像撤销→混合 / uid 采用留 F1 / dedup 引擎侧零代码 / skeleton 预览即锁定边界. **F1 盲选窗口 UI 初版 ✅**(2026-06-09): `_start_chain` 摊 K/1 张卡背 + `_on_hand_pick`(pick_hand)+ `set_face_text` + mock 同形; GUI 跑通 + `smoke_f1_uid_window` 21/21 + codex 1 P1(uid 双 store 撞号→撤+检重, uid 对齐顺延)+1 P3. **流程模型校准**: F1 跑测暴露"持久盘面 + 流程驱动"才是设计真意(原 §二总览), 立独立真源文档 [前端流程 MVP](Design/zhengdao-cards/设计/事件包交互流程_持久盘面与流程驱动_MVP.md)(持久盘面/地点卡开包/继续卡推进/骨架→自省终点/单包闭环). 切片序 **E0 ✅ → E1 ✅ → A1 ✅ → F1 初版✅ → 批次一 ✅ → 批次二 ✅ → 批次三 ✅ → UE调优 + I1**。**批次一 ✅**(2026-06-09): 持久盘面 + 地点卡入口 + F2 锁定 + DD1 镜像派(`_board_cards`/`_open_pack`/`_on_board_pick`/`_spawn_mirror_card` + 适配器 `engine_card_data`). **批次二 ✅**(2026-06-10): 单包闭环 —— 继续=重对账 `pack_window_for_pile` 三分支(`_on_continue`)+ `_spawn_continue_card`(`CardType.CONTINUE`)+ 骨架·自省同 single 通道 + DD-B2 余背向前补齐(`_relayout_board`)+ 抽 `_populate_board`; `smoke_batch2_loop` 15/15 + GUI §七3–6. **批次三 ✅**(2026-06-10): F3 两层聚焦状态机(总览/挂起→L1 事件焦点→L2 选项焦点→结果态; 真源 [卡牌前端交互设计](Design/zhengdao-cards/设计/卡牌前端交互设计.md) §2.9 F 含 Mermaid 图)+ F5 封缄(`_sealed`); 抽 `_focus_camera_on`/`_pan_camera_to`/`_clear_option_focus_ui` + 点卡聚焦/拍桌解除/确定不解除·继续才解除 + `_event_card`/`_refocus_event`; 编译 0 + 三冒烟全过 + GUI 验收通过 + codex 2 项(还原 tween 竞态 / L1 取位)已修. **聚焦交互细化 ✅**(2026-06-11, UE pass 前功能调整): 手牌统一收起+降亮度区分(美术友好)+收起态 hover 上移 / 聚焦指向固定区域(非具体卡, `_focus_region_center`)/ 点继续两步摇镜头(`_camera_to_board`); 真源 §2.5 + §2.9 F. **下一接手点 = UE 调优 pass: 参数整理(裸数字归拢常量块)+ 进一步 UE 体验 + 美术资产细化(纳入本阶段); B④ playtest 二次微调 → I1 单包闭环冒烟收尾**。
+> 不在此常驻;查 `Design/zhengdao-cards/进度/` 对应文档或 `_progress_board/progress.yaml` 看板。已落地:Line A / Line B(前端核心循环,`6be2f63`→`ef8e086` + S8 鉴定算法)、D 阶段前置三议题(§7.1/7.2/7.3)。
 
-## 下一阶段工作顺序(MVP 1 期实施 — 可新会话接手)
+## 核心设计真源
 
-**路线**(2026-05-22 主对话决议): "骨架够用即转实施、细节边原型边回填",MVP 先建**基础骨架 + 核心体验循环**、增强类后置(见记忆 mvp-scope-skeleton-core-first);§7.8 D 段为底,**实施模型 = 双线并行 + §3.2 汇合**(2026-05-22 细化,以此处为准)。
-
-**Line A ✅ 全段完成**(2026-05-25~26, 主项目 `6be2f63`→`ef8e086`): S1 牌桌底座+原语 / S2 锚点簇+因果链+手牌 / S3a 揭示循环 / S3b 鉴定聚焦(镜头驱动)+投入双入口. 核心循环用 mock 跑通; 详见 [前端骨架_LineA_实施](Design/zhengdao-cards/进度/前端骨架_LineA_实施.md) §八。
-
-**Line B ✅ 全段完成**(2026-05-27~28):
-
-- **S1 数据契约层 ✅** (`d9bb63d`): CSV 字段 +12 + 契约三件套同步 + ConfigRuntime 加载链路占位.
-- **S2 资源标记系统 ✅** (`db68fce`): `resource_marker_pool.gd` (~190 行) + 引擎接入回流.
-- **S3 选项层调度 ✅** (`df5e0a0`): `_build_option_set` 五步算法 + `_weighted_sample_options`. 向后兼容.
-- **S8.0 标记投入鉴定算法 ✅** (`ce2b20d`): `marker_check_resolver.gd` 独立支柱模块. 单元 12/12.
-- **S8.2-S8.7 §3.2 汇合 ✅** (2026-05-28, 待提交): `engine_data_source.gd` 适配器 + `mock_data_source.gd` fallback + card_table USE_ENGINE 接入 + engine forced_tier / cancel_pending_turn 接口 + 3 处透明消化 (location_select / presentation 屏 / outcome 屏含自省末屏). 单元冒烟 5/5 + playtest 核心循环 ✅ (loc_pharmacy 包内 turn=1→2→3 → 末位池命中 evt_s2_sk_he 鉴定型 → 包结束 → 自省透明消化). 详见 [前端骨架_LineB_实施](Design/zhengdao-cards/进度/前端骨架_LineB_实施.md) §3.14-§3.16。
-
-**卡牌化前置 §3.X 三议题 ✅ 全部收口**(2026-05-29 ~ 2026-06-02, 见 [[卡牌前端交互设计]] §3.X):
-
-- **§3.X.1 颗粒度 ✅**(2026-05-29): 事件=单屏单卡 / 结果卡反馈文字每事件每档独立 / 常规鉴定 3 档 / `result_art` 留空 / 引擎桥接补结果文字.
-- **§3.X.2 氛围 UX ✅**(2026-05-29): 美术后置进 backlog; 讨论产出 **§2.9 正式流程聚焦循环**.
-- **§3.X.3 衔接 ✅**(2026-06-02): **盲选承诺窗口**(同解 X.3.1 落幕↔登场 + X.3.2 包进度);X.3.3 地点切换 / X.3.4 自省暴露明确延后.
-
-**新会话默认接手: 完整事件流程切片(E0→I1)→ 之后 B④ 普通事件资产**:
-
-§3.X.3 的盲选窗口落地需引擎包模型改动, 且 §2.9 聚焦循环有三块未实现, 又涉"卡牌即数据实体"地基 —— 合并为 [[完整事件流程_实施]] 一条切片, 序 **E0 卡牌实体地基(uid/modifiers/Zone, world_state 权威)✅ → E1 引擎包模型(uid 贯穿盲选窗口)✅ → A1 适配器 → F1-F5 前端(盲选窗口 + §2.9 缺口)→ I1 整合冒烟**. 大改动, 已走设计先行 + 冒烟流程落盘. **E0+E1 完成(E1: 2026-06-04 提交 34a0ca6), 下一会话接手 A1** —— 接手前先读 [[完整事件流程_实施]] 顶部「新会话启动必读」+ §四 A1。
-
-**之后**: 完整事件流程跑通 → **B④ 少量普通事件资产(§7.1)+ 数值标定**(需可跑循环 playtest);**X.4 鉴定难度·成功率·标记**(解 adapter `FALLBACK_DIFFICULTY` 占位)可前置或并行.
-
-**契约 mismatch 决议**(2026-05-27):
-
-- Line A "投入标记 → vibe-test 骰子鉴定" 不对齐 → **新设计独立鉴定算法** (S8.0 MarkerCheckResolver + S8.2 engine forced_tier 接口绕过 vibe-test 骰池路径). 接口对齐: card_table → MockDataSource/EngineDataSource (同形 RefCounted) → engine + MarkerCheckResolver + ResourceMarkerPool.
-- 算法核心: 投入 < D-1 始终有失败 / 投入 = D-1 必然成功 / 投入 > D-1 提升大成功 / 投入达上限封顶大成功率
-- great_fail 不由常规鉴定产出 → 由 §7.7 孤注一掷链路产出 (fail → 选孤注 → 再败 → great_fail; MVP 1 期延后 S5)
-
-## 预启动工作项(follow-up,可新会话接手)
-
-- ~~**explore 四件套 queue 格式统一**~~ **✅ 已解决(2026-05-22)** — 采纳「混合·按需开问题段」方案:扁平任务为默认 + 问题段为可选增量层,`explore-supervise` 双模式自适应(扁平轻模式 / 问题模式),启动检查不再硬性要求问题段。改动落用户级 skill(supervise/kickoff + 各 references)+ setup 模板 + 实例侧 queue/README 契约文档,跨项目即时共享。#013 扁平场景冒烟走通(启动检查判扁平轻模式 → 扎实度 4/4 + 6 源全满足 → 确认归档)。详见 [Design/共享/进度/explore_skill_通用化进度.md](Design/共享/进度/explore_skill_通用化进度.md) 2026-05-22(三) 历史。
+- [前端表现卡牌化_MVP草案](Design/zhengdao-cards/进度/前端表现卡牌化_MVP草案.md) — 卡牌交互版核心设计草案(§7.x 资源/回馈/撰写规格)
+- [卡牌前端交互设计](Design/zhengdao-cards/设计/卡牌前端交互设计.md) — 前端表现+交互层规格(§2.9 聚焦循环 / §3 揭示 / §3.X 卡牌化前置)
 
 ## 进度维护规则
 
-同 vibe-test:详情在进度文档,索引在此处 ≤ 一行;更新时机=会话产生实质性进展;新建进度文档需在此添加索引;归档需冒烟测试通过;活跃区控制 ≤ 10 条;会话启动延续某活跃进度时先读该文档顶部「新会话启动必读」段。
+详情在进度文档、本节每条 ≤20 字;**活跃 ≤10 条硬上限**。状态变化时**三处同 commit**:进度文档 + 本节索引 + `Design/zhengdao-cards/_progress_board/progress.yaml`(pre-commit `check_progress_board_sync` 提醒、非阻断),改完跑 `_progress_board/check_board.py` 应全绿。新建进度文档加索引;**新增开发方向先入开发路线图 → 再加 progress.yaml entries**;新建/改设计文档按「Design 操作规范 § 文档分层」归层(旧文档零回填)。归档需冒烟通过。会话启动延续活跃进度时先读该文档顶部「新会话启动必读」。
