@@ -134,7 +134,6 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 ## 活跃(≤10 条硬上限)
 
 - [完整事件流程_实施](Design/zhengdao-cards/进度/完整事件流程_实施.md) — **🔧 当前焦点**:E0→批次三 ✅,剩 **UE 调优 pass**(参数归拢+体验+美术)→ I1 收尾。流程真源 [事件包交互流程_持久盘面与流程驱动_MVP](Design/zhengdao-cards/设计/事件包交互流程_持久盘面与流程驱动_MVP.md)
-- [文档治理与进度看板_MVP实施](Design/zhengdao-cards/进度/文档治理与进度看板_MVP实施.md) — ✅ 已实施(S0–S5 + 冒烟 A–E):开发路线图/看板/待跟踪/候选库/八字段/分区 hook 落地
 
 ## 预启动(方向已认可,等启动时机)
 
@@ -143,7 +142,7 @@ Godot 统一通过 `tools/run_godot.ps1` 调用,不要假设系统 PATH 中存�
 
 ## 已归档
 
-> 不在此常驻;查 `Design/zhengdao-cards/进度/` 对应文档或 `_progress_board/progress.yaml` 看板。已落地:Line A / Line B(前端核心循环,`6be2f63`→`ef8e086` + S8 鉴定算法)、D 阶段前置三议题(§7.1/7.2/7.3)。
+> 不在此常驻;查 `Design/zhengdao-cards/进度/` 对应文档或 `_progress_board/progress.yaml` 看板。已落地:Line A / Line B(前端核心循环,`6be2f63`→`ef8e086` + S8 鉴定算法)、D 阶段前置三议题(§7.1/7.2/7.3)、文档治理与进度看板(S0–S5,`db8bb9b`)。
 
 ## 核心设计真源
 
