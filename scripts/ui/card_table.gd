@@ -75,9 +75,11 @@ const SHAKE_AMP_BIG := 16.0            # 大成功/大失败震幅(世界像素)
 const SHAKE_AMP_SMALL := 6.0           # 普通成功/失败震幅
 const HAND_COLLAPSE_DY := 150.0                 # 聚焦时手牌统一下移量(收起; = hover 上移量, 回 home 完整显示)
 const HAND_DIM_COLOR := Color(0.45, 0.45, 0.45, 1.0)  # 非白名单收起压暗(降亮度·不透明; modulate 乘色, 对美术友好)
+const OVERVIEW_FADE := 0.20   # 总览态无关卡(盘面余背/锚点)显隐渐变时长(替代瞬切, 与升格 morph 同节奏)
                                                 #   白名单保持 Color.WHITE(不压暗, 凸显可投)。不用 alpha(会变半透明看穿)
 var _event_card: CardScn = null         # F3: 当前 active 事件卡(L1 聚焦目标 + 总览挂起态点它重聚焦入口)
 var _event_stage: EventStage = null     # B 升格舞台(乙): 聚焦时展示完整叙事+美术, 解除时收拢; 与 _event_card 互为显隐
+var _overview_fade_tweens: Array[Tween] = []   # 总览态卡显隐渐变 tween 句柄(切换前 kill, 防淡出回调误隐, 见 _set_overview_visible)
 var _sealed: bool = false               # F5 封缄态: 确定后置位, 此后选项/事件不可再聚焦改选
 var _focus_active: bool = false         # L2: 选项级聚焦中(可投入/确定); L1 与总览均为 false
 var _focused_option: CardScn = null     # 当前聚焦的选项卡
@@ -373,20 +375,34 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 	_board_cards.erase(chosen)
 	_chain_nodes.append(chosen)   # 计入事件链 → 继续清场时随链回收(非盘面回收)
 	_relayout_board()             # DD-B2: 其后余背向前补齐, 平滑滑动填空洞(与选中卡飞出同时)
-	# 选中卡: 填真实事件文字 → 飞到因果链起点 → 翻开 → 进 L1 事件聚焦 → 展开选项。
-	# B 升格: 事件卡只承载标题(紧凑面); 完整叙事 + 美术交给升格舞台。事件卡飞抵起点后隐藏(舞台接管),
-	# 拍桌解除时再现身作总览挂起态的可点重聚焦入口(见 _unfocus_to_overview / _refocus_event)。
+	# 两段动效(UE pass · 方案乙): 段A 抽取 = 卡【可见地】飞到因果链起点 + 翻面;
+	# 段A 完成 → 段B 升格 = 舞台从这张牌【展开】(_enter_event_focus)。两步分明, 不再压成一帧。
 	chosen.set_face_text(str(event_info.get("title", "")), "")
+	chosen.flip_to(true)
 	if chosen.position != _chain_origin:
+		# 边界: 飞行 tween 绑定 chosen, 若飞行期间 chosen 被 free 则 tween 随之销毁、本回调不触发。
+		# 当前无路径在飞行期 free 选中卡(_board_active 守卫 + 无清场触发), 故不构成实际死锁; _enter_event_focus
+		# 入口的有效性兜底覆盖"回调被调但卡已失效"的残余情形(审查 P2-1)。
 		var tw := chosen.create_tween()
 		tw.tween_property(chosen, "position", _chain_origin, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	chosen.flip_to(true)
+		tw.tween_callback(_enter_event_focus.bind(chosen, event_info))
+	else:
+		_enter_event_focus(chosen, event_info)
+
+## 段B 升格聚焦(段A 飞行完成回调; 或卡已在位时直接调): 舞台从事件卡展开 + 隐卡 + 镜头聚焦 + 收手牌 + 展开选项。
+## 事件卡飞抵起点后隐藏(升格舞台接管表现), 拍桌解除时再现身作总览挂起态的可点重聚焦入口
+## (见 _unfocus_to_overview / _refocus_event)。
+func _enter_event_focus(chosen: CardScn, event_info: Dictionary) -> void:
+	if not is_instance_valid(chosen):
+		_board_active = false   # 兜底: 选中卡已失效 → 复位结算守卫, 防 _board_active 卡死(审查 P2-1)
+		return
 	_event_card = chosen          # F3: 记 active 事件卡(L1 聚焦目标 + 重聚焦入口; chosen.clicked 已连 _on_board_pick)
-	# B 升格: 舞台登场(完整叙事 + 16:9 美术满铺); 事件卡隐于舞台之后
+	# B 升格: 舞台从事件卡 rect 长大成满面板(完整叙事 + 16:9 美术); 外框接管卡位后即隐卡, 视觉无缝衔接。
 	_spawn_event_stage(
 		str(event_info.get("title", "")),
 		str(event_info.get("background_art", "")),
-		str(event_info.get("narrative", event_info.get("body", "")))
+		str(event_info.get("narrative", event_info.get("body", ""))),
+		chosen
 	)
 	chosen.visible = false
 	# F3 L1 事件级聚焦: 镜头聚焦【因果链区域】(非具体卡 — 事件/选项/结局/继续同处一区, 触发即固定;
@@ -529,37 +545,73 @@ func _stage_frame() -> Dictionary:
 
 ## 总览态世界元素(盘面余背 + 地点锚点簇)显隐: 升格聚焦时隐藏避免与舞台面板重叠; 解除/结束时恢复。
 ## (手牌在独立 CanvasLayer, 由 _apply_hand_focus/_restore_hand_home 管, 不在此列。)
+## 改【淡入淡出】替代瞬切(UE pass · 2026-06-28): 与纯色块 morph 同节奏渐变 → 无关卡显隐不再硬切冲击。
+## 入口先 kill 上一批渐变 tween: 防"淡出途中转淡入"时旧淡出的 visible=false 回调误隐(经典竞态)。
 func _set_overview_visible(v: bool) -> void:
-	for node in _board_cards:
-		if is_instance_valid(node):
-			(node as Node2D).visible = v
-	for node in _anchor_cards:
-		if is_instance_valid(node):
-			(node as Node2D).visible = v
+	for t in _overview_fade_tweens:
+		if t.is_valid():
+			t.kill()
+	_overview_fade_tweens.clear()
+	var nodes: Array[Node] = []
+	nodes.append_array(_board_cards)
+	nodes.append_array(_anchor_cards)
+	for node in nodes:
+		if not is_instance_valid(node):
+			continue
+		var n: Node2D = node
+		var tw := n.create_tween()
+		if v:
+			n.visible = true   # 淡入: 先现身再渐显(起点 a 为上次淡出残留值或 1)
+			tw.tween_property(n, "modulate:a", 1.0, OVERVIEW_FADE)
+		else:
+			# 淡出毕再真隐(被 kill 则不触发); 回调延迟执行, 节点可能已被回收 → valid 兜底(审查 P3, 同 done 闭包)
+			tw.tween_property(n, "modulate:a", 0.0, OVERVIEW_FADE)
+			tw.tween_callback(func() -> void:
+				if is_instance_valid(n):
+					n.visible = false)
+		_overview_fade_tweens.append(tw)
 
-## 生成并淡入升格舞台(z_index 调低 → 选项/结果卡叠于其上, 形成"包裹"观感)+ 隐藏总览元素。
-func _spawn_event_stage(title: String, art_filename: String, narrative: String) -> void:
+## 事件卡底色(纯色块登场/收拢的卡色端) = 事件卡类型色, 与 card.gd 卡面绘制一致 → 交接无缝。
+func _event_card_color() -> Color:
+	return CardScn.TYPE_COLORS[CardScn.CardType.EVENT]
+
+## 生成升格舞台并从事件卡【三段式展开】(z_index 调低 → 选项/结果卡叠于其上)+ 隐藏总览元素。
+## anchor = 事件卡(已飞抵 _chain_origin): 外框以卡底色登场盖住卡位 → 扩展成面板("面板从这张牌撑开")。
+func _spawn_event_stage(title: String, art_filename: String, narrative: String, anchor: CardScn) -> void:
 	_despawn_event_stage()
 	var stage: EventStage = EventStageScn.new()
 	stage.z_index = -10
 	_upper_zone.add_child(stage)
 	stage.position = _stage_center()
 	stage.setup(title, art_filename, narrative)
-	stage.fade_in()
+	stage.expand_from(anchor.global_position, CardScn.SIZE, _event_card_color())
 	_event_stage = stage
 	_set_overview_visible(false)
 
-## 重新淡入(重聚焦时)+ 隐藏总览元素。
+## 重新展开(重聚焦时, 舞台已存在)+ 隐藏总览元素。从 _event_card(总览挂起态现身处)长大。
 func _show_event_stage() -> void:
-	if _event_stage != null and is_instance_valid(_event_stage):
-		_event_stage.fade_in()
+	if _event_stage != null and is_instance_valid(_event_stage) \
+			and _event_card != null and is_instance_valid(_event_card):
+		_event_stage.expand_from(_event_card.global_position, CardScn.SIZE, _event_card_color())
 		_set_overview_visible(false)
 
-## 淡出收拢(拍桌解除时; 不回收, 留待重聚焦或事件结束清场)+ 恢复总览元素。
+## 收拢回事件卡(拍桌解除时; 不回收, 留待重聚焦或事件结束清场)。三段式逆向: 信息淡出 → 纯色块缩回卡 rect。
+## 事件卡现身 + 盘面余背恢复延后到纯色块完全缩回后(on_done 回调), 避免卡浮在大色块上、盘面盖住缩回动画。
 func _hide_event_stage() -> void:
+	var card: CardScn = _event_card
+	var done: Callable = func() -> void:
+		if card != null and is_instance_valid(card):
+			card.visible = true
+		_set_overview_visible(true)
 	if _event_stage != null and is_instance_valid(_event_stage):
-		_event_stage.fade_out()
-	_set_overview_visible(true)
+		if card != null and is_instance_valid(card):
+			_event_stage.collapse_to(card.global_position, CardScn.SIZE, _event_card_color(), done)
+		else:
+			# 防御(审查 P2-2): 有舞台但无事件卡(异常态) → 直接隐舞台, 不留满屏面板悬浮叠在已恢复的总览卡上
+			_event_stage.visible = false
+			done.call()
+	else:
+		done.call()   # 无舞台(异常态): 直接恢复显隐
 
 ## 回收舞台(事件结束清场)+ 恢复总览元素(继续回盘面后余背须再现)。
 func _despawn_event_stage() -> void:
@@ -801,10 +853,8 @@ func _confirm_focus() -> void:
 ## (点继续 = 事件结束, 走 _clear_event_chain → _focus_teardown_snap + _camera_to_board, 镜头去盘面而非原总览。)
 func _unfocus_to_overview() -> void:
 	_flyback_invested_markers()
-	# B 升格: 收拢舞台 → 事件卡现身作总览挂起态的可点重聚焦入口
+	# B 升格: 收拢舞台(三段式逆向); 事件卡现身延后到纯色块缩回后(由 _hide_event_stage 的 on_done 回调置 visible)
 	_hide_event_stage()
-	if _event_card != null and is_instance_valid(_event_card):
-		_event_card.visible = true
 	if _pre_focus_saved:
 		var cam_tw := _camera.create_tween()
 		cam_tw.set_parallel(true)
