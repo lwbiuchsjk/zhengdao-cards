@@ -379,6 +379,9 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 	# 段A 完成 → 段B 升格 = 舞台从这张牌【展开】(_enter_event_focus)。两步分明, 不再压成一帧。
 	chosen.set_face_text(str(event_info.get("title", "")), "")
 	chosen.flip_to(true)
+	# UE pass: 玩家点击事件牌后, 镜头与飞牌同步进入因果链工作区。
+	# 事件牌只是引路的首位锚点; 取景目标是随后承载面板/选项/结果的整条因果链区域。
+	_focus_camera_on(_active_frame())
 	if chosen.position != _chain_origin:
 		# 边界: 飞行 tween 绑定 chosen, 若飞行期间 chosen 被 free 则 tween 随之销毁、本回调不触发。
 		# 当前无路径在飞行期 free 选中卡(_board_active 守卫 + 无清场触发), 故不构成实际死锁; _enter_event_focus
@@ -391,7 +394,7 @@ func _on_board_pick(chosen: CardScn, pick_uid: String) -> void:
 
 ## 段B 升格聚焦(段A 飞行完成回调; 或卡已在位时直接调): 舞台从事件卡展开 + 隐卡 + 镜头聚焦 + 收手牌 + 展开选项。
 ## 事件卡飞抵起点后隐藏(升格舞台接管表现), 拍桌解除时再现身作总览挂起态的可点重聚焦入口
-## (见 _unfocus_to_overview / _refocus_event)。
+## (见 _unfocus_to_event_card / _refocus_event)。
 func _enter_event_focus(chosen: CardScn, event_info: Dictionary) -> void:
 	if not is_instance_valid(chosen):
 		_board_active = false   # 兜底: 选中卡已失效 → 复位结算守卫, 防 _board_active 卡死(审查 P2-1)
@@ -407,7 +410,8 @@ func _enter_event_focus(chosen: CardScn, event_info: Dictionary) -> void:
 	chosen.visible = false
 	# F3 L1 事件级聚焦: 镜头聚焦【因果链区域】(非具体卡 — 事件/选项/结局/继续同处一区, 触发即固定;
 	# 此后点各卡不再移镜头)+ 收起手牌(空白名单 → 全收起+全压暗) → 再展开选项(§2.9 F: 总览 → L1)。
-	_focus_camera_on(_active_frame())
+	if not _pre_focus_saved:
+		_focus_camera_on(_active_frame())
 	_apply_hand_focus([])   # L1: 还没选选项, 无白名单 → 所有手牌收起+压暗
 	if not _options_shown:
 		_options_shown = true
@@ -511,24 +515,12 @@ func _frame_targets(centers: Array[Vector2], max_zoom: float = -1.0) -> Dictiona
 	var fit: float = clampf(minf(vp.x / rect_w, vp.y / rect_h), MIN_FOCUS_ZOOM, top)
 	return {"center": center, "zoom": Vector2(fit, fit)}
 
-## 当前 active 事件区的取景目标 = 事件卡(_chain_origin) + 全部选项卡【预期布局位】(+结果位)。
-## 用预期布局位(非读节点 global_position)避免读到飞行中 tween 的旧位(沿用 codex P2 修法);
+## 当前 active 事件区的取景目标 = 因果链工作区(事件牌首位 + 选项/结果/继续槽 + 上方升格舞台)。
 ## 进聚焦时一次性框定整区 → 之后点各卡/展开选项/出结果均不重框(尊重「触发即固定」决定, §2.9 point 1)。
 func _active_frame() -> Dictionary:
-	# B 升格: 舞台在场时镜头框住整块面板(替代离散卡取景)
-	if _event_stage != null and is_instance_valid(_event_stage):
-		return _stage_frame()
-	var centers: Array[Vector2] = [_chain_origin]
-	var n: int = _option_cards.size()
-	if n == 0:
-		n = _data_source.options_for_event().size()   # 首次聚焦时选项尚未 spawn, 取数量预测位
-	for i in n:
-		centers.append(Vector2(_chain_origin.x + (i + 1) * SLOT_DX, _chain_origin.y))
-	# 结果位(SLOT_DX*2) + 继续位(SLOT_DX*3): 确定后/揭示后才出现, 但确定不移镜头 → 提前纳入取景,
-	# 与契约「区域含 事件→选项→结局→继续, 触发即固定」(§2.9 point 1)一致, 不依赖 zoom 余量巧合。
-	centers.append(Vector2(_chain_origin.x + SLOT_DX * 2.0, _chain_origin.y))
-	centers.append(Vector2(_chain_origin.x + SLOT_DX * 3.0, _chain_origin.y))
-	return _frame_targets(centers)
+	# B 升格: 事件流程统一框住因果链工作区。即使舞台尚未生成, 也按未来面板 + 卡槽取景,
+	# 让点击事件牌后的飞行阶段已经把玩家视线带到后续展开区域。
+	return _chain_work_frame()
 
 # ---------- B 升格舞台(乙): 事件聚焦时世界内放大成场景面板, 包裹选项/结果 ----------
 
@@ -536,12 +528,30 @@ func _active_frame() -> Dictionary:
 func _stage_center() -> Vector2:
 	return Vector2(_chain_origin.x + SLOT_DX * 1.5, _chain_origin.y - 240.0)
 
-## 升格态镜头取景: 框住整块舞台面板(替代离散卡取景)。
-func _stage_frame() -> Dictionary:
+## 因果链工作区镜头取景: 视线中心落在因果链行(事件牌首位 + 后续选项/结果/继续卡所在行),
+## 同时把上方升格舞台纳入视野。这样玩家点击事件牌时, 运动锚点在首位, 注意力落在整条工作区。
+func _chain_work_frame() -> Dictionary:
 	var vp: Vector2 = get_viewport_rect().size
-	var panel: Vector2 = EventStageScn.PANEL_SIZE + Vector2(FRAME_PAD, FRAME_PAD) * 2.0
-	var fit: float = clampf(minf(vp.x / panel.x, vp.y / panel.y), MIN_FOCUS_ZOOM, FOCUS_ZOOM.x)
-	return {"center": _stage_center(), "zoom": Vector2(fit, fit)}
+	var center := _focus_region_center()
+	var pad := Vector2(FRAME_PAD, FRAME_PAD)
+	var panel_half := EventStageScn.PANEL_SIZE * 0.5 + pad
+	var panel_center := _stage_center()
+	var min_x: float = panel_center.x - panel_half.x
+	var max_x: float = panel_center.x + panel_half.x
+	var min_y: float = panel_center.y - panel_half.y
+	var max_y: float = panel_center.y + panel_half.y
+	# 因果链行四个固定槽: 事件 → 选项/确定项 → 结果 → 继续。
+	var card_half := CardScn.SIZE * 0.5 + pad
+	for i in 4:
+		var slot := Vector2(_chain_origin.x + float(i) * SLOT_DX, _chain_origin.y)
+		min_x = minf(min_x, slot.x - card_half.x)
+		max_x = maxf(max_x, slot.x + card_half.x)
+		min_y = minf(min_y, slot.y - card_half.y)
+		max_y = maxf(max_y, slot.y + card_half.y)
+	var rect_w: float = maxf(maxf(absf(center.x - min_x), absf(max_x - center.x)) * 2.0, 1.0)
+	var rect_h: float = maxf(maxf(absf(center.y - min_y), absf(max_y - center.y)) * 2.0, 1.0)
+	var fit: float = clampf(minf(vp.x / rect_w, vp.y / rect_h), MIN_FOCUS_ZOOM, FOCUS_ZOOM.x)
+	return {"center": center, "zoom": Vector2(fit, fit)}
 
 ## 总览态世界元素(盘面余背 + 地点锚点簇)显隐: 升格聚焦时隐藏避免与舞台面板重叠; 解除/结束时恢复。
 ## (手牌在独立 CanvasLayer, 由 _apply_hand_focus/_restore_hand_home 管, 不在此列。)
@@ -643,7 +653,7 @@ func shake(amplitude: float, duration: float = 0.45) -> void:
 ## 聚焦取景(F3 通用子函数, L1 事件级 / L2 选项级 / 重聚焦 共用):
 ## 传 {center, zoom} 取景帧(由 _active_frame 算, 用预期布局位非 global_position — codex P2)。
 ## 入口先 kill 待定的还原 tween(防其 chained callback 误清 _pre_focus_saved, codex P1)。
-## 首次进入聚焦时记录总览镜头(切换/重聚焦不覆盖, 供解除时还原)→ 镜头平移 + 适配 zoom 到取景帧。
+## 首次进入聚焦时记录总览镜头(切换/重聚焦不覆盖; 事件结束去盘面时用于兜底)→ 镜头平移 + 适配 zoom 到取景帧。
 func _focus_camera_on(frame: Dictionary) -> void:
 	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
 		_restore_cam_tween.kill()   # 中途重聚焦: 杀还原 tween → 其 _pre_focus_saved=false callback 不再触发
@@ -654,12 +664,19 @@ func _focus_camera_on(frame: Dictionary) -> void:
 		_pre_focus_saved = true
 	var target_pos: Vector2 = frame.get("center", _focus_region_center())
 	var target_zoom: Vector2 = frame.get("zoom", FOCUS_ZOOM)
+	_tween_camera_to_frame(target_pos, target_zoom)
+
+## 复用镜头取景: 所有进入/退出事件工作区的镜头动作都走这里, 确保位置和缩放一致。
+func _tween_camera_to_frame(target_pos: Vector2, target_zoom: Vector2, on_done: Callable = Callable()) -> Tween:
 	var cam_tw := _camera.create_tween()
 	cam_tw.set_parallel(true)
 	cam_tw.tween_property(_camera, "position", target_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	cam_tw.tween_property(_camera, "zoom", target_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	if on_done.is_valid():
+		cam_tw.chain().tween_callback(on_done)
+	return cam_tw
 
-## 继续后摇镜头指向剩余盘面卡(point 2): 平移到盘面卡中心 + 还原总览 zoom(从事件区 zoom-out 移向盘面),
+## 继续后摇镜头指向剩余盘面卡(point 2): 只平移到盘面卡中心, zoom 沿用刚才因果链工作区倍率。
 ## 引导玩家"还有待办事件, 继续盲选"。回盘面(剩余多张)/ 骨架·自省登场(单张新卡)同此 —— 指向那批新卡。
 func _camera_to_board() -> void:
 	var centers: Array[Vector2] = []
@@ -671,14 +688,14 @@ func _camera_to_board() -> void:
 	if _restore_cam_tween != null and _restore_cam_tween.is_valid():
 		_restore_cam_tween.kill()
 	_restore_cam_tween = null
-	# UE pass(借鉴 Voidmatrix 包围矩形动态取景): 框住剩余盘面卡 + 适配缩放; max_zoom 限 1.0 ——
-	# 盘面是【总览态】, 只拉远不怼脸(单张余背时也不放大), 比原"质心+还原固定 zoom"更贴合内容。
+	# UE pass: 队列中心仍按包围盒计算, 但不重新适配 zoom。少量/单张卡时若重新适配会把牌放得过大;
+	# 保持刚才因果链工作区倍率, 让"事件收起 → 视线移向队列"只发生位置转移。
 	var frame: Dictionary = _frame_targets(centers, 1.0)
-	var board_zoom: Vector2 = frame.get("zoom", _pre_focus_cam_zoom)
+	var board_zoom: Vector2 = _camera.zoom
 	var board_center: Vector2 = frame.get("center", centers[0])
-	# 两步串行(默认非并行): 先 zoom 适配盘面(位置不动, 仍在事件区), 再平移指向未展开的盘面卡。
+	# 保持 zoom 不变, 只平移指向未展开的盘面卡。
 	var tw := _camera.create_tween()
-	tw.tween_property(_camera, "zoom", board_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_camera.zoom = board_zoom
 	tw.tween_property(_camera, "position", board_center, 0.40).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	_restore_cam_tween = tw   # 存句柄(F1): 摇镜头途中玩家盲选下一张 → _focus_camera_on 会 kill 它, 防双镜头 tween 抢镜
 
@@ -818,13 +835,13 @@ func _build_confirm_button() -> void:
 	_confirm_btn.pressed.connect(_confirm_focus)
 	_focused_option.add_child(_confirm_btn)
 
-## 拍桌空白解除聚焦(§2.9 F): L1/L2 均回总览(事件挂起、非退出, 点因果链卡可重聚焦);
+## 拍桌空白解除聚焦(§2.9 F): L1/L2 收起事件面板, 回到因果链工作区里的普通事件牌;
 ## 封缄态不解除(确定后镜头随结果, 由点继续才解除)。
 func _cancel_focus() -> void:
 	if _sealed:
 		return
 	if _pre_focus_saved:
-		_unfocus_to_overview()
+		_unfocus_to_event_card()
 
 ## 确定 = 封缄(F5): 算 tier → 消耗投入标记(不飞回)→ 置封缄态 → 退 L2 UI → 提交 + 出结果。
 ## 不解除聚焦(§2.9 F: 确定不回总览, 镜头保持聚焦态并平移呈现结果; 解除留到点继续)。
@@ -848,20 +865,21 @@ func _confirm_focus() -> void:
 		_commit_option(option)
 		_expand_result(option_id, opt_type, tier)  # 结果卡落在固定区域内, 不移镜头(point 1)
 
-## 解除聚焦回总览(§2.9 F: 拍桌空白触发): 投入标记飞回 → 镜头还原总览 pos+zoom → 手牌归位 → 退 L2 UI。
-## 事件状态保留(挂起, 非退出); pre_focus 还原 tween 完成后才清标志(中途再聚焦仍用原总览镜头)。
+## 解除聚焦到普通事件牌(§2.9 F: 拍桌空白触发): 投入标记飞回 → 面板收拢 → 镜头保持因果链工作区取景 → 手牌归位 → 退 L2 UI。
+## 事件状态保留(挂起, 非退出); 镜头完成后清聚焦标志, 点事件牌可用同一取景重新展开。
 ## (点继续 = 事件结束, 走 _clear_event_chain → _focus_teardown_snap + _camera_to_board, 镜头去盘面而非原总览。)
-func _unfocus_to_overview() -> void:
+func _unfocus_to_event_card() -> void:
 	_flyback_invested_markers()
 	# B 升格: 收拢舞台(三段式逆向); 事件卡现身延后到纯色块缩回后(由 _hide_event_stage 的 on_done 回调置 visible)
 	_hide_event_stage()
 	if _pre_focus_saved:
-		var cam_tw := _camera.create_tween()
-		cam_tw.set_parallel(true)
-		cam_tw.tween_property(_camera, "position", _pre_focus_cam_pos, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		cam_tw.tween_property(_camera, "zoom", _pre_focus_cam_zoom, 0.30).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		cam_tw.chain().tween_callback(func() -> void: _pre_focus_saved = false)
-		_restore_cam_tween = cam_tw   # 存句柄: 还原途中若重聚焦, _focus_camera_on 会 kill 它(防 callback 误清标志)
+		if _restore_cam_tween != null and _restore_cam_tween.is_valid():
+			_restore_cam_tween.kill()
+		var frame := _chain_work_frame()
+		var target_pos: Vector2 = frame.get("center", _focus_region_center())
+		var target_zoom: Vector2 = frame.get("zoom", FOCUS_ZOOM)
+		_restore_cam_tween = _tween_camera_to_frame(target_pos, target_zoom, func() -> void:
+			_pre_focus_saved = false)
 	_restore_hand_home()   # 手牌升回 home + 全亮 + 清 hover 上移(总览态)
 	_clear_option_focus_ui()
 
